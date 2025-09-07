@@ -327,15 +327,40 @@ async def text_to_speech_endpoint(
         logger.error(f"TTS conversion failed: {e}")
         raise HTTPException(status_code=500, detail=f"TTS failed: {str(e)}")
 
+# Progress tracking
+progress_status = {}
+
+@app.get("/progress/{task_id}")
+async def get_progress(task_id: str):
+    """Get processing progress"""
+    return progress_status.get(task_id, {"status": "not_found", "progress": 0})
+
 @app.post("/audiobook-pipeline")
 async def audiobook_pipeline(request: Request):
-    """Complete audiobook pipeline for n8n integration"""
-    logger.info("Starting audiobook pipeline")
+    """Complete audiobook pipeline for n8n integration with progress tracking"""
+    import uuid
+    task_id = str(uuid.uuid4())
+    
+    # Initialize progress
+    progress_status[task_id] = {
+        "status": "starting",
+        "progress": 0,
+        "message": "Initializing audiobook processing...",
+        "timestamp": datetime.now().isoformat()
+    }
+    
+    logger.info(f"Starting audiobook pipeline with task_id: {task_id}")
     
     try:
         # Get form data
         form = await request.form()
         logger.info(f"Received form fields: {list(form.keys())}")
+        
+        progress_status[task_id].update({
+            "status": "processing",
+            "progress": 10,
+            "message": "Validating input parameters..."
+        })
         
         # Extract parameters
         language = form.get("language", "en")
@@ -344,6 +369,11 @@ async def audiobook_pipeline(request: Request):
         # Get PDF file
         pdf_file = form.get("pdf_file")
         if not pdf_file:
+            progress_status[task_id].update({
+                "status": "error",
+                "progress": 0,
+                "message": "PDF file is required"
+            })
             raise HTTPException(status_code=400, detail="PDF file is required")
         
         logger.info(f"Processing PDF file, language: {language}")
@@ -351,16 +381,39 @@ async def audiobook_pipeline(request: Request):
         temp_files = []
         
         try:
+            progress_status[task_id].update({
+                "status": "processing",
+                "progress": 20,
+                "message": "Saving uploaded PDF file..."
+            })
+            
             # Step 1: Save PDF file
             pdf_path = await save_uploaded_file(pdf_file, "input_book.pdf")
             temp_files.append(pdf_path)
+            
+            progress_status[task_id].update({
+                "status": "processing",
+                "progress": 40,
+                "message": "Extracting text from PDF..."
+            })
             
             # Step 2: Extract text
             logger.info("Extracting text from PDF...")
             extracted_text = await extract_pdf_text(pdf_path)
             
             if len(extracted_text.strip()) < 10:
+                progress_status[task_id].update({
+                    "status": "error",
+                    "progress": 40,
+                    "message": "No meaningful text extracted from PDF"
+                })
                 raise HTTPException(status_code=400, detail="No meaningful text extracted from PDF")
+            
+            progress_status[task_id].update({
+                "status": "processing",
+                "progress": 70,
+                "message": f"Converting {len(extracted_text)} characters to speech..."
+            })
             
             # Step 3: Convert to speech
             logger.info("Converting text to speech...")
@@ -373,24 +426,38 @@ async def audiobook_pipeline(request: Request):
             # Get file size
             file_size = os.path.getsize(audio_file) if os.path.exists(audio_file) else 0
             
+            progress_status[task_id].update({
+                "status": "completed",
+                "progress": 100,
+                "message": "Audiobook created successfully! Preparing download...",
+                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                "text_length": len(extracted_text)
+            })
+            
             logger.info("Audiobook pipeline completed successfully")
             
-            return {
-                "success": True,
-                "message": "Audiobook created successfully",
-                "audio_file": audio_file,
-                "details": {
-                    "text_length": len(extracted_text),
-                    "language": language,
-                    "file_size_bytes": file_size,
-                    "file_size_mb": round(file_size / (1024 * 1024), 2),
-                    "output_name": output_name
-                },
-                "text_preview": extracted_text[:200] + "..." if len(extracted_text) > 200 else extracted_text,
-                "timestamp": datetime.now().isoformat()
-            }
+            # Return the audio file directly for download
+            return FileResponse(
+                path=audio_file,
+                media_type="audio/mpeg",
+                filename=f"{output_name}_audiobook.mp3",
+                headers={
+                    "Content-Description": "File Transfer",
+                    "Content-Disposition": f"attachment; filename={output_name}_audiobook.mp3",
+                    "X-File-Size": str(file_size),
+                    "X-Text-Length": str(len(extracted_text)),
+                    "X-Language": language,
+                    "X-Processing-Time": str(datetime.now().isoformat())
+                }
+            )
             
         except Exception as e:
+            # Update progress with error
+            progress_status[task_id].update({
+                "status": "error",
+                "progress": 0,
+                "message": f"Processing failed: {str(e)}"
+            })
             # Cleanup on error
             for temp_file in temp_files:
                 safe_cleanup(temp_file)
@@ -398,12 +465,14 @@ async def audiobook_pipeline(request: Request):
         
     except Exception as e:
         logger.error(f"Pipeline error: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "message": "Audiobook pipeline failed",
-            "timestamp": datetime.now().isoformat()
-        }
+        # Make sure progress reflects the error
+        if task_id in progress_status:
+            progress_status[task_id].update({
+                "status": "error",
+                "message": f"Pipeline failed: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            })
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {str(e)}")
 
 @app.get("/download/{filename}")
 async def download_file(filename: str):
