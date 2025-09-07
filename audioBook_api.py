@@ -38,7 +38,7 @@ class CloudConfig:
     PORT = int(os.environ.get("PORT", 10000))  # Render.com uses PORT env variable
     TEMP_DIR = "/tmp/voice_cloning"  # Cloud-friendly temp directory
     MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB for cloud limits
-    MAX_TEXT_LENGTH = 30000  # 30k characters limit
+    MAX_TEXT_LENGTH = 15000  # 15k characters limit
     TIMEOUT_SECONDS = 300  # 5 minutes for cloud
 
 config = CloudConfig()
@@ -334,6 +334,89 @@ progress_status = {}
 async def get_progress(task_id: str):
     """Get processing progress"""
     return progress_status.get(task_id, {"status": "not_found", "progress": 0})
+
+@app.post("/audiobook-json")
+async def audiobook_pipeline_json(request: Request):
+    """Audiobook pipeline that returns JSON with download URL (easier for n8n)"""
+    import uuid
+    task_id = str(uuid.uuid4())
+    
+    logger.info(f"Starting audiobook pipeline (JSON mode) with task_id: {task_id}")
+    
+    try:
+        # Get form data
+        form = await request.form()
+        logger.info(f"Received form fields: {list(form.keys())}")
+        
+        # Extract parameters
+        language = form.get("language", "en")
+        output_name = form.get("output_name", "audiobook")
+        
+        # Get PDF file
+        pdf_file = form.get("pdf_file")
+        if not pdf_file:
+            raise HTTPException(status_code=400, detail="PDF file is required")
+        
+        logger.info(f"Processing PDF file, language: {language}")
+        
+        temp_files = []
+        
+        try:
+            # Step 1: Save PDF file
+            pdf_path = await save_uploaded_file(pdf_file, "input_book.pdf")
+            temp_files.append(pdf_path)
+            
+            # Step 2: Extract text
+            logger.info("Extracting text from PDF...")
+            extracted_text = await extract_pdf_text(pdf_path)
+            
+            if len(extracted_text.strip()) < 10:
+                raise HTTPException(status_code=400, detail="No meaningful text extracted from PDF")
+            
+            # Step 3: Convert to speech
+            logger.info("Converting text to speech...")
+            tts = gTTS(text=extracted_text, lang=language, slow=False)
+            
+            # Create filename with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"{output_name}_{timestamp}.mp3"
+            audio_file = os.path.join(config.TEMP_DIR, filename)
+            tts.save(audio_file)
+            
+            # Get file size
+            file_size = os.path.getsize(audio_file) if os.path.exists(audio_file) else 0
+            
+            logger.info("Audiobook pipeline completed successfully")
+            
+            # Return JSON with download information
+            return JSONResponse({
+                "success": True,
+                "message": "Audiobook created successfully",
+                "download_url": f"/download/{filename}",
+                "full_download_url": f"https://audiobook-cloud.onrender.com/download/{filename}",
+                "filename": filename,
+                "details": {
+                    "text_length": len(extracted_text),
+                    "language": language,
+                    "file_size_bytes": file_size,
+                    "file_size_mb": round(file_size / (1024 * 1024), 2),
+                    "output_name": output_name,
+                    "processing_time": "completed",
+                    "task_id": task_id
+                },
+                "text_preview": extracted_text[:200] + "..." if len(extracted_text) > 200 else extracted_text,
+                "timestamp": datetime.now().isoformat()
+            })
+            
+        except Exception as e:
+            # Cleanup on error
+            for temp_file in temp_files:
+                safe_cleanup(temp_file)
+            raise e
+        
+    except Exception as e:
+        logger.error(f"Pipeline error: {e}")
+        raise HTTPException(status_code=500, detail=f"Pipeline failed: {str(e)}")
 
 @app.post("/audiobook-pipeline")
 async def audiobook_pipeline(request: Request):

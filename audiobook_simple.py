@@ -62,10 +62,10 @@ def extract_text_from_pdf(pdf_path: str) -> str:
                 if page_text:
                     text += page_text + "\n"
             
-            # Limit text to prevent timeouts (30k characters)
-            if len(text) > 30000:
-                text = text[:30000] + "..."
-                logger.info("Text truncated to 30k characters")
+            # Limit text to prevent timeouts (15k characters)
+            if len(text) > 15000:
+                text = text[:15000] + "..."
+                logger.info("Text truncated to 15k characters")
             
             return text.strip()
     

@@ -117,7 +117,7 @@ Procfile: web: uvicorn audioBook_api:app --host 0.0.0.0 --port $PORT
 
 3. **Timeout Errors:** 
    - Large PDFs may exceed processing time
-   - Text is automatically limited to 30k characters
+   - Text is automatically limited to 15k characters
 
 ### Step-by-Step Fix for Current Error:
 
