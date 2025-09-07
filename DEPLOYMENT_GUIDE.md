@@ -82,15 +82,56 @@ Body: Binary file (PDF)
 
 ## 🐛 Troubleshooting
 
-### Common Issues:
-1. **Build Fails:** Check requirements_render.txt syntax
-2. **Service Won't Start:** Verify Procfile command
-3. **Timeout Errors:** Large PDFs may exceed processing time
+### Pydantic Build Error (Rust compilation issues):
+**Problem:** `pydantic-core` fails to compile with Rust errors
+**Solution:** Use the minimal requirements files provided:
 
-### Debug Steps:
-1. Check deployment logs in Render dashboard
-2. Test health endpoint first: `/health`
-3. Start with small PDF files
+1. **First try:** `requirements_render.txt` (updated with stable versions)
+2. **If that fails:** `requirements_minimal.txt` (flexible version ranges)  
+3. **Last resort:** `requirements_ultra_minimal.txt` (no version pins)
+
+### Alternative Deployment Options:
+
+#### Option 1: Use Simple API (Recommended for troubleshooting)
+```
+Main File: audiobook_simple.py
+Requirements: requirements_ultra_minimal.txt
+Procfile: web: uvicorn audiobook_simple:app --host 0.0.0.0 --port $PORT
+```
+
+#### Option 2: Original API with Fixed Dependencies
+```
+Main File: audioBook_api.py  
+Requirements: requirements_render.txt (updated)
+Procfile: web: uvicorn audioBook_api:app --host 0.0.0.0 --port $PORT
+```
+
+### Common Issues:
+1. **Build Fails:** 
+   - Try different requirements files in order of complexity
+   - Check Python version compatibility (use 3.11.9)
+   
+2. **Service Won't Start:** 
+   - Verify Procfile points to correct Python file
+   - Check logs for import errors
+
+3. **Timeout Errors:** 
+   - Large PDFs may exceed processing time
+   - Text is automatically limited to 30k characters
+
+### Step-by-Step Fix for Current Error:
+
+1. **Update your repository** with these files:
+   - Replace `requirements_render.txt` with the updated version
+   - Add `audiobook_simple.py` as backup option
+   - Update `runtime.txt` to `python-3.11.9`
+
+2. **Try Simple Deployment First:**
+   - Change Procfile to: `web: uvicorn audiobook_simple:app --host 0.0.0.0 --port $PORT`
+   - Use `requirements_ultra_minimal.txt` as build command
+
+3. **If Simple Works:**
+   - Switch back to full API after confirming basic deployment works
 
 ## 📞 Support
 If you encounter issues:
