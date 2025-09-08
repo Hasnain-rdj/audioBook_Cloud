@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: audiobook-voice-cloning-api
+    env: python
+    plan: starter
+    buildCommand: "./build.sh"
+    startCommand: "uvicorn audioBook_api:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.18
+      - key: PIP_VERSION  
+        value: 23.0.1
+      - key: PORT
+        generateValue: true
+    autoDeploy: false
+    disk:
+      name: audiobook-storage
+      mountPath: /tmp
+      sizeGB: 5
