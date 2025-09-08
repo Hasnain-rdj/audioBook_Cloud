@@ -1,6 +1,6 @@
 """
-AudioBook Voice Cloning API for Render.com Deployment (Python 3.9 + Offline Processing)
-Cloud-optimized FastAPI server for PDF to Speech-to-Speech conversion using OFFLINE scripts only
+AudioBook Voice Cloning API for Render.com Deployment
+Cloud-optimized FastAPI server for PDF to Speech-to-Speech conversion
 """
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
@@ -12,22 +12,14 @@ import tempfile
 import shutil
 from pathlib import Path
 import PyPDF2
-try:
-    import pdfplumber
-    PDFPLUMBER_AVAILABLE = True
-except ImportError:
-    PDFPLUMBER_AVAILABLE = False
+from gtts import gTTS
+from datetime import datetime
+import subprocess
 import logging
 import asyncio
 import time
 from typing import Dict, Any, Union
 import platform
-import requests
-import zipfile
-import uuid
-import re
-import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configure logging for cloud deployment
 logging.basicConfig(
@@ -36,129 +28,6 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]  # Only console logging for cloud
 )
 logger = logging.getLogger(__name__)
-
-# Import PDF processing libraries
-from pathlib import Path
-import PyPDF2
-try:
-    import pdfplumber
-    PDFPLUMBER_AVAILABLE = True
-    logger.info("pdfplumber library loaded successfully")
-except ImportError:
-    PDFPLUMBER_AVAILABLE = False
-    logger.warning("pdfplumber not available, using PyPDF2 only")
-
-# Import offline TTS library (with cloud environment fallback)
-try:
-    import pyttsx3
-    PYTTSX3_AVAILABLE = True
-    logger.info("pyttsx3 offline TTS library loaded successfully")
-except ImportError:
-    PYTTSX3_AVAILABLE = False
-    logger.warning("pyttsx3 not available in cloud environment")
-except Exception as e:
-    PYTTSX3_AVAILABLE = False
-    logger.warning(f"pyttsx3 initialization issue: {e}")
-
-from datetime import datetime
-import subprocess
-
-# Configure logging for cloud deployment
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]  # Only console logging for cloud
-)
-logger = logging.getLogger(__name__)
-
-# Offline Text-to-Speech using pyttsx3 (with cloud fallback)
-def offline_text_to_speech(text: str, output_path: str, language: str = "en", voice_rate: int = 200) -> str:
-    """
-    Offline text-to-speech conversion using pyttsx3 (no internet required)
-    Falls back to creating a simple text file in cloud environments
-    """
-    try:
-        logger.info(f"Starting offline TTS conversion for {len(text)} characters")
-        
-        if not PYTTSX3_AVAILABLE:
-            logger.warning("pyttsx3 not available, creating text file as fallback")
-            # Cloud fallback: create a text file instead of audio
-            text_output_path = output_path.replace('.wav', '.txt').replace('.mp3', '.txt')
-            with open(text_output_path, 'w', encoding='utf-8') as f:
-                f.write(f"OFFLINE TTS FALLBACK - Text content:\n\n{text}")
-            logger.info(f"Text fallback file created: {text_output_path}")
-            return text_output_path
-        
-        # Initialize pyttsx3 engine
-        engine = pyttsx3.init()
-        
-        # Configure voice settings
-        voices = engine.getProperty('voices')
-        if voices:
-            # Try to set appropriate voice based on language
-            for voice in voices:
-                if language == "en" and ("english" in voice.name.lower() or "en" in voice.id.lower()):
-                    engine.setProperty('voice', voice.id)
-                    break
-                elif language in voice.id.lower():
-                    engine.setProperty('voice', voice.id)
-                    break
-        
-        # Set speech rate (words per minute)
-        engine.setProperty('rate', voice_rate)
-        
-        # Set volume (0.0 to 1.0)
-        engine.setProperty('volume', 0.9)
-        
-        # Convert text to speech and save as audio file
-        engine.save_to_file(text, output_path)
-        engine.runAndWait()
-        
-        # Verify output file was created
-        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
-            logger.info(f"Offline TTS completed: {output_path}")
-            return output_path
-        else:
-            logger.error("Offline TTS failed - no output file generated")
-            raise Exception("TTS conversion failed")
-            
-    except Exception as e:
-        logger.error(f"Offline TTS error: {e}")
-        # Ultimate fallback for cloud environments
-        text_output_path = output_path.replace('.wav', '.txt').replace('.mp3', '.txt')
-        with open(text_output_path, 'w', encoding='utf-8') as f:
-            f.write(f"TTS CONVERSION FALLBACK\n\nOriginal text ({len(text)} characters):\n\n{text}")
-        logger.info(f"Created text fallback file: {text_output_path}")
-        return text_output_path
-
-def get_offline_tts_voices():
-    """Get available offline TTS voices (with cloud fallback)"""
-    try:
-        if not PYTTSX3_AVAILABLE:
-            logger.warning("pyttsx3 not available, returning fallback voice list")
-            return [
-                {"id": "fallback", "name": "Cloud Fallback Text Output", "language": "en"}
-            ]
-            
-        engine = pyttsx3.init()
-        voices = engine.getProperty('voices')
-        voice_list = []
-        
-        for voice in voices:
-            voice_info = {
-                "id": voice.id,
-                "name": voice.name,
-                "language": getattr(voice, 'languages', ['unknown'])[0] if hasattr(voice, 'languages') else 'unknown'
-            }
-            voice_list.append(voice_info)
-        
-        engine.stop()
-        return voice_list
-    except Exception as e:
-        logger.error(f"Failed to get TTS voices: {e}")
-        return [
-            {"id": "fallback", "name": "Cloud Fallback Text Output", "language": "en"}
-        ]
 
 # Voice cloning simulation (since OpenVoice is too heavy for cloud)
 def apply_voice_effects(audio_file: str, output_file: str, voice_style: str = "default") -> str:
@@ -170,23 +39,6 @@ def apply_voice_effects(audio_file: str, output_file: str, voice_style: str = "d
     import shutil
     
     try:
-        # Check if source file exists
-        if not os.path.exists(audio_file):
-            logger.error(f"Source audio file not found: {audio_file}")
-            
-            # Try to find a text file alternative
-            text_file = audio_file.replace('.wav', '.txt').replace('.mp3', '.txt')
-            if os.path.exists(text_file):
-                logger.info(f"Found text fallback file: {text_file}")
-                # Copy text content to output file with audio extension
-                shutil.copy2(text_file, output_file.replace('.wav', '.txt').replace('.mp3', '.txt'))
-                return output_file.replace('.wav', '.txt').replace('.mp3', '.txt')
-            
-            # Create a minimal placeholder file
-            with open(output_file.replace('.wav', '.txt').replace('.mp3', '.txt'), 'w') as f:
-                f.write("Audio processing fallback - source file not available")
-            return output_file.replace('.wav', '.txt').replace('.mp3', '.txt')
-        
         # For cloud deployment, we'll use audio processing instead of full voice cloning
         # This simulates voice transformation using speed/pitch modifications
         
@@ -222,454 +74,114 @@ def apply_voice_effects(audio_file: str, output_file: str, voice_style: str = "d
         shutil.copy2(audio_file, output_file)
         return output_file
 
-# Enhanced OpenVoice V2 Integration - Full Implementation
-async def enhanced_openvoice_clone_voice(source_audio: str, reference_audio: str, output_file: str) -> str:
+# OpenVoice V2 Integration
+async def openvoice_clone_voice(source_audio: str, reference_audio: str, output_file: str) -> str:
     """
-    Enhanced OpenVoice V2 voice cloning with chunking for large files - Full Implementation
+    OpenVoice V2 voice cloning integration
     """
     try:
-        logger.info("Starting Enhanced OpenVoice V2 voice cloning (Full Implementation)...")
+        logger.info("Starting OpenVoice V2 voice cloning...")
         
         # Check if OpenVoice directory exists
         openvoice_dir = Path("OpenVoice")
         if not openvoice_dir.exists():
-            logger.info("OpenVoice not found, setting up...")
-            setup_success = await setup_openvoice_environment()
-            if not setup_success:
-                logger.error("OpenVoice setup failed, using fallback")
-                return apply_voice_effects(source_audio, output_file, "default")
-        
-        # Ensure models are downloaded
-        models_ready = await download_openvoice_models()
-        if not models_ready:
-            logger.error("OpenVoice models not available")
-            return apply_voice_effects(source_audio, output_file, "default")
+            logger.error("OpenVoice directory not found")
+            raise HTTPException(status_code=500, detail="OpenVoice not available")
         
         # Import OpenVoice components
         import sys
         sys.path.insert(0, str(openvoice_dir))
         
         try:
-            logger.info("Importing OpenVoice components...")
-            
-            # Import required libraries
             import torch
-            import torchaudio
-            import librosa
-            import soundfile as sf
-            import numpy as np
             from openvoice import se_extractor
             from openvoice.api import ToneColorConverter
-            
-            logger.info("OpenVoice imports successful")
-            
-            # Set device
-            device = "cuda:0" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Using device: {device}")
-            
-            # Initialize converter
-            ckpt_converter = openvoice_dir / "checkpoints" / "converter"
-            config_file = ckpt_converter / "config.json"
-            checkpoint_file = ckpt_converter / "checkpoint.pth"
-            
-            if not config_file.exists() or not checkpoint_file.exists():
-                logger.error("OpenVoice model files missing")
-                return apply_voice_effects(source_audio, output_file, "default")
-            
-            # Initialize ToneColorConverter
-            tone_color_converter = ToneColorConverter(str(config_file), device=device)
-            tone_color_converter.load_ckpt(str(checkpoint_file))
-            
-            logger.info("ToneColorConverter initialized successfully")
-            
-            # Extract embeddings
-            logger.info("Extracting source embedding...")
-            source_se, _ = se_extractor.get_se(source_audio, tone_color_converter)
-            
-            logger.info("Extracting reference embedding...")
-            reference_se, _ = se_extractor.get_se(reference_audio, tone_color_converter)
-            
-            # Check audio duration for chunking decision
-            try:
-                y, sr = librosa.load(source_audio, sr=None)
-                duration = len(y) / sr
-                logger.info(f"Source audio duration: {duration:.1f} seconds")
-                
-                if duration > 120:  # Process in chunks for large files (>2 minutes)
-                    logger.info("Large file detected, processing in chunks...")
-                    
-                    # Process in 60-second chunks
-                    chunk_duration = 60
-                    chunk_samples = chunk_duration * sr
-                    num_chunks = min(10, int(np.ceil(duration / chunk_duration)))  # Max 10 chunks
-                    
-                    output_chunks = []
-                    temp_files = []
-                    
-                    for i in range(num_chunks):
-                        logger.info(f"Processing chunk {i+1}/{num_chunks}...")
-                        
-                        start_sample = i * chunk_samples
-                        end_sample = min((i + 1) * chunk_samples, len(y))
-                        
-                        # Create temporary chunk file
-                        chunk_file = os.path.join(config.TEMP_DIR, f"temp_chunk_{i}.wav")
-                        sf.write(chunk_file, y[start_sample:end_sample], sr)
-                        temp_files.append(chunk_file)
-                        
-                        # Convert this chunk
-                        chunk_output = os.path.join(config.TEMP_DIR, f"temp_output_{i}.wav")
-                        
-                        try:
-                            tone_color_converter.convert(
-                                audio_src_path=chunk_file,
-                                src_se=source_se,
-                                tgt_se=reference_se,
-                                output_path=chunk_output,
-                                message=f"OpenVoice V2 chunk {i+1}"
-                            )
-                            output_chunks.append(chunk_output)
-                            temp_files.append(chunk_output)
-                            logger.info(f"Chunk {i+1} completed successfully")
-                        except Exception as e:
-                            logger.warning(f"Chunk {i+1} failed: {e}")
-                    
-                    # Combine chunks
-                    if output_chunks:
-                        logger.info("Combining audio chunks...")
-                        combined_audio = []
-                        
-                        for chunk_path in output_chunks:
-                            if os.path.exists(chunk_path):
-                                chunk_y, chunk_sr = librosa.load(chunk_path, sr=sr)
-                                combined_audio.append(chunk_y)
-                        
-                        if combined_audio:
-                            # Concatenate audio chunks
-                            final_audio = np.concatenate(combined_audio)
-                            sf.write(output_file, final_audio, sr)
-                            logger.info("Chunks combined successfully!")
-                        else:
-                            logger.error("No valid chunks to combine")
-                            shutil.copy2(source_audio, output_file)
-                    
-                    # Cleanup temp files
-                    for temp_file in temp_files:
-                        try:
-                            os.remove(temp_file)
-                        except:
-                            pass
-                            
-                else:
-                    # Process normally for short files
-                    logger.info("Processing audio file normally...")
-                    tone_color_converter.convert(
-                        audio_src_path=source_audio,
-                        src_se=source_se,
-                        tgt_se=reference_se,
-                        output_path=output_file,
-                        message="OpenVoice V2 conversion"
-                    )
-                    logger.info("Voice cloning completed successfully!")
-                
-            except Exception as audio_error:
-                logger.error(f"Audio processing error: {audio_error}")
-                # Fallback to basic conversion
-                tone_color_converter.convert(
-                    audio_src_path=source_audio,
-                    src_se=source_se,
-                    tgt_se=reference_se,
-                    output_path=output_file,
-                    message="OpenVoice V2 fallback conversion"
-                )
-            
-            # Verify output file was created
-            if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                logger.info(f"Voice cloning completed successfully: {output_file}")
-                return output_file
-            else:
-                logger.error("Voice cloning failed - no output file generated")
-                return apply_voice_effects(source_audio, output_file, "default")
-                
         except ImportError as e:
-            logger.error(f"OpenVoice import error: {e}")
-            logger.info("Falling back to voice effects...")
-            return apply_voice_effects(source_audio, output_file, "default")
-            
-        except Exception as e:
-            logger.error(f"OpenVoice processing error: {e}")
-            logger.info("Falling back to voice effects...")
-            return apply_voice_effects(source_audio, output_file, "default")
+            logger.error(f"OpenVoice imports failed: {e}")
+            raise HTTPException(status_code=500, detail="OpenVoice dependencies not available")
+        
+        # Check device
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        logger.info(f"Using device: {device}")
+        
+        # Download models if needed
+        await download_openvoice_models()
+        
+        # Initialize converter
+        ckpt_converter = openvoice_dir / "checkpoints" / "converter"
+        
+        if not ckpt_converter.exists():
+            raise HTTPException(status_code=500, detail="OpenVoice models not found")
+        
+        tone_color_converter = ToneColorConverter(
+            str(ckpt_converter / "config.json"), 
+            device=device
+        )
+        tone_color_converter.load_ckpt(str(ckpt_converter / "checkpoint.pth"))
+        
+        # Extract embeddings
+        logger.info("Extracting source embedding...")
+        source_se, _ = se_extractor.get_se(source_audio, tone_color_converter)
+        
+        logger.info("Extracting reference embedding...")
+        reference_se, _ = se_extractor.get_se(reference_audio, tone_color_converter)
+        
+        # Convert voice
+        logger.info("Performing voice conversion...")
+        tone_color_converter.convert(
+            audio_src_path=source_audio,
+            src_se=source_se,
+            tgt_se=reference_se,
+            output_path=output_file,
+            message="OpenVoice V2 conversion"
+        )
+        
+        logger.info(f"Voice cloning completed: {output_file}")
+        return output_file
         
     except Exception as e:
-        logger.error(f"Enhanced OpenVoice cloning failed: {e}")
-        logger.info("Using original audio as fallback")
-        try:
-            shutil.copy2(source_audio, output_file)
-            return output_file
-        except Exception as fallback_error:
-            logger.error(f"Even fallback failed: {fallback_error}")
-            raise HTTPException(status_code=500, detail="Audio processing completely failed")
+        logger.error(f"OpenVoice cloning failed: {e}")
+        # Fallback to original audio
+        shutil.copy2(source_audio, output_file)
+        return output_file
 
 async def download_openvoice_models():
-    """Download OpenVoice V2 models and setup if needed - Full Implementation"""
+    """Download OpenVoice models if needed"""
     try:
-        logger.info("Checking OpenVoice V2 models...")
+        models_dir = Path("OpenVoice/checkpoints/converter")
+        models_dir.mkdir(parents=True, exist_ok=True)
         
-        openvoice_dir = Path("OpenVoice")
-        converter_dir = openvoice_dir / "checkpoints" / "converter"
-        base_speaker_dir = openvoice_dir / "checkpoints" / "base_speakers" / "EN"
-        
-        # Check if all required files exist
-        required_files = [
-            converter_dir / "config.json",
-            converter_dir / "checkpoint.pth",
-            base_speaker_dir / "config.json", 
-            base_speaker_dir / "checkpoint.pth"
-        ]
-        
-        all_files_exist = all(f.exists() and f.stat().st_size > 100 for f in required_files)
-        
-        if all_files_exist:
-            logger.info("All OpenVoice V2 models are available")
-            return True
-        
-        logger.info("Downloading missing OpenVoice V2 models...")
-        
-        # Create directories
-        converter_dir.mkdir(parents=True, exist_ok=True)
-        base_speaker_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Download model files with updated URLs
-        import requests
-        
-        # Try multiple sources for OpenVoice models
-        model_sources = {
-            "converter_config": [
-                "https://github.com/myshell-ai/OpenVoice/raw/main/checkpoints/converter/config.json",
-                "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/converter/config.json"
-            ],
-            "converter_checkpoint": [
-                "https://github.com/myshell-ai/OpenVoice/raw/main/checkpoints/converter/checkpoint.pth", 
-                "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/converter/checkpoint.pth"
-            ],
-            "base_speaker_config": [
-                "https://github.com/myshell-ai/OpenVoice/raw/main/checkpoints/base_speakers/EN/config.json",
-                "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/base_speakers/EN/config.json"
-            ],
-            "base_speaker_checkpoint": [
-                "https://github.com/myshell-ai/OpenVoice/raw/main/checkpoints/base_speakers/EN/checkpoint.pth",
-                "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/base_speakers/EN/checkpoint.pth"
-            ]
+        model_files = {
+            "config.json": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/converter/config.json",
+            "checkpoint.pth": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/converter/checkpoint.pth"
         }
         
-        download_paths = {
-            "converter_config": converter_dir / "config.json",
-            "converter_checkpoint": converter_dir / "checkpoint.pth",
-            "base_speaker_config": base_speaker_dir / "config.json",
-            "base_speaker_checkpoint": base_speaker_dir / "checkpoint.pth"
-        }
-        
-        for model_name, urls in model_sources.items():
-            try:
-                if not download_paths[model_name].exists() or download_paths[model_name].stat().st_size < 100:
-                    logger.info(f"Downloading {model_name}...")
+        for filename, url in model_files.items():
+            file_path = models_dir / filename
+            if not file_path.exists():
+                logger.info(f"Downloading {filename}...")
+                response = requests.get(url)
+                if response.status_code == 200:
+                    with open(file_path, 'wb') as f:
+                        f.write(response.content)
+                    logger.info(f"Downloaded {filename}")
+                else:
+                    logger.error(f"Failed to download {filename}")
                     
-                    # Try each URL until one works
-                    downloaded = False
-                    for url in urls:
-                        try:
-                            logger.info(f"Trying URL: {url}")
-                            response = requests.get(url, timeout=600, stream=True)  # 10 minute timeout
-                            response.raise_for_status()
-                            
-                            with open(download_paths[model_name], 'wb') as f:
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                            
-                            logger.info(f"Downloaded {model_name} from {url} ({download_paths[model_name].stat().st_size} bytes)")
-                            downloaded = True
-                            break
-                        except Exception as e:
-                            logger.warning(f"Failed to download {model_name} from {url}: {e}")
-                            continue
-                    
-                    if not downloaded:
-                        logger.error(f"Failed to download {model_name} from all sources")
-                        return False
-                        
-            except Exception as e:
-                logger.error(f"Failed to download {model_name}: {e}")
-                return False
-        
-        # Verify all downloads
-        all_downloaded = all(f.exists() and f.stat().st_size > 100 for f in required_files)
-        
-        if all_downloaded:
-            logger.info("All OpenVoice V2 models downloaded successfully")
-            return True
-        else:
-            logger.error("Some model downloads failed")
-            return False
-            
     except Exception as e:
         logger.error(f"Model download failed: {e}")
-        return False
 
-async def setup_openvoice_environment():
-    """Setup OpenVoice V2 environment with full repository - Full Implementation"""
-    try:
-        logger.info("Setting up OpenVoice V2 environment...")
-        
-        openvoice_dir = Path("OpenVoice")
-        
-        # Check if OpenVoice is already set up
-        if (openvoice_dir / "openvoice").exists() and (openvoice_dir / "openvoice" / "__init__.py").exists():
-            logger.info("OpenVoice V2 environment already exists")
-            return True
-        
-        # Download and extract OpenVoice repository
-        logger.info("Downloading OpenVoice V2 repository...")
-        
-        import requests
-        import zipfile
-        import tempfile
-        
-        # Download the repository
-        repo_url = "https://github.com/myshell-ai/OpenVoice/archive/refs/heads/main.zip"
-        response = requests.get(repo_url, timeout=600)  # 10 minute timeout
-        response.raise_for_status()
-        
-        # Extract to temporary location
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_zip:
-            temp_zip.write(response.content)
-            temp_zip_path = temp_zip.name
-        
-        # Extract the zip file
-        with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
-            zip_ref.extractall(".")
-        
-        # Move contents to OpenVoice directory
-        extracted_dir = Path("OpenVoice-main")
-        if extracted_dir.exists():
-            openvoice_dir.mkdir(exist_ok=True)
-            
-            # Copy all contents
-            for item in extracted_dir.iterdir():
-                if item.is_dir():
-                    shutil.copytree(item, openvoice_dir / item.name, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(item, openvoice_dir / item.name)
-            
-            # Cleanup
-            shutil.rmtree(extracted_dir)
-        
-        # Cleanup temp file
-        os.unlink(temp_zip_path)
-        
-        # Verify setup
-        if (openvoice_dir / "openvoice").exists():
-            logger.info("OpenVoice V2 environment setup completed successfully")
-            return True
-        else:
-            logger.error("OpenVoice V2 setup verification failed")
-            return False
-            
-    except Exception as e:
-        logger.error(f"OpenVoice environment setup failed: {e}")
-        return False
-        
-    except Exception as e:
-        logger.error(f"OpenVoice environment setup failed: {e}")
-        return False
-
-def create_minimal_openvoice_files(openvoice_dir: Path):
-    """Create minimal OpenVoice files for lightweight deployment"""
-    try:
-        # Create minimal api.py
-        api_content = '''
-import logging
-import shutil
-import os
-
-logger = logging.getLogger(__name__)
-
-class ToneColorConverter:
-    def __init__(self, config_path, device="cpu"):
-        self.device = device
-        self.config_path = config_path
-        logger.info(f"ToneColorConverter initialized on {device}")
-        
-    def load_ckpt(self, ckpt_path):
-        logger.info(f"Loading checkpoint: {ckpt_path}")
-        # Lightweight checkpoint loading simulation
-        
-    def convert(self, audio_src_path, src_se, tgt_se, output_path, message=""):
-        logger.info(f"Converting voice: {audio_src_path} -> {output_path}")
-        try:
-            # Fallback: copy source audio with basic audio effects if possible
-            shutil.copy2(audio_src_path, output_path)
-            logger.info("Voice conversion completed (lightweight mode)")
-        except Exception as e:
-            logger.error(f"Voice conversion failed: {e}")
-            # Ultimate fallback: ensure output file exists
-            if not os.path.exists(output_path):
-                shutil.copy2(audio_src_path, output_path)
-'''
-        
-        # Create minimal se_extractor.py
-        extractor_content = '''
-import logging
-import os
-
-logger = logging.getLogger(__name__)
-
-def get_se(audio_path, tone_color_converter):
-    """Extract speaker embedding (lightweight version)"""
-    try:
-        logger.info(f"Extracting speaker embedding from: {audio_path}")
-        
-        # Create a simple dummy embedding based on file properties
-        if os.path.exists(audio_path):
-            file_size = os.path.getsize(audio_path)
-            # Create a simple feature vector based on file characteristics
-            dummy_embedding = [float(file_size % 1000), 1.0, 0.5, 0.8]  # Simple list instead of torch tensor
-        else:
-            dummy_embedding = [0.0, 1.0, 0.5, 0.8]  # Default embedding
-            
-        return dummy_embedding, None
-        
-    except Exception as e:
-        logger.error(f"Embedding extraction failed: {e}")
-        return [0.0, 1.0, 0.5, 0.8], None  # Default embedding
-'''
-
-        
-        # Write the files
-        with open(openvoice_dir / "api.py", "w") as f:
-            f.write(api_content)
-            
-        with open(openvoice_dir / "se_extractor.py", "w") as f:
-            f.write(extractor_content)
-            
-        logger.info("Created minimal OpenVoice fallback files")
-        
-    except Exception as e:
-        logger.error(f"Failed to create minimal OpenVoice files: {e}")
-
-# Cloud Configuration for Python 3.9 + Offline Processing
+# Cloud Configuration
 class CloudConfig:
-    API_TITLE = "AudioBook Voice Cloning API (Offline)"
-    API_VERSION = "2.0.0"
-    API_DESCRIPTION = "Python 3.9 Cloud API for OFFLINE PDF text extraction and TTS conversion - No external APIs"
+    API_TITLE = "AudioBook Voice Cloning API"
+    API_VERSION = "1.0.0"
+    API_DESCRIPTION = "Cloud-ready API for PDF text extraction and TTS conversion"
     HOST = "0.0.0.0"
     PORT = int(os.environ.get("PORT", 10000))  # Render.com uses PORT env variable
     TEMP_DIR = "/tmp/voice_cloning"  # Cloud-friendly temp directory
     MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB for cloud limits
-    MAX_TEXT_LENGTH = 50000  # 50k characters limit (increased for offline processing)
-    TIMEOUT_SECONDS = 600  # 10 minutes for offline processing
-    PYTHON_VERSION = "3.9.18"
-    PROCESSING_MODE = "OFFLINE_ONLY"
+    MAX_TEXT_LENGTH = 15000  # 15k characters limit
+    TIMEOUT_SECONDS = 300  # 5 minutes for cloud
 
 config = CloudConfig()
 
@@ -717,89 +229,6 @@ def ensure_temp_dir():
 # Initialize temp directory
 ensure_temp_dir()
 
-# Startup event to initialize OpenVoice
-@app.on_event("startup")
-async def startup_event():
-    """Initialize offline processing environment on server startup - Python 3.9"""
-    try:
-        import sys
-        logger.info(f"🚀 Starting OFFLINE AudioBook API initialization...")
-        logger.info(f"🐍 Python version: {sys.version}")
-        logger.info(f"🎯 Target Python version: {config.PYTHON_VERSION}")
-        logger.info(f"🔒 Processing mode: {config.PROCESSING_MODE}")
-        logger.info(f"📂 Working directory: {os.getcwd()}")
-        logger.info(f"💾 Available disk space:")
-        
-        # Check disk space
-        try:
-            import shutil
-            total, used, free = shutil.disk_usage("/")
-            logger.info(f"   Total: {total // (2**30)} GB")
-            logger.info(f"   Used: {used // (2**30)} GB") 
-            logger.info(f"   Free: {free // (2**30)} GB")
-        except:
-            logger.info("   Could not check disk space")
-        
-        # Check offline TTS availability
-        try:
-            if PYTTSX3_AVAILABLE:
-                import pyttsx3
-                engine = pyttsx3.init()
-                voices = engine.getProperty('voices')
-                logger.info(f"🎙️ Offline TTS engine initialized with {len(voices) if voices else 0} voices")
-                engine.stop()
-            else:
-                logger.warning("🎙️ Offline TTS not available - using text fallback mode")
-        except Exception as e:
-            logger.warning(f"⚠️ Offline TTS initialization issue: {e}")
-        
-        # Check PyTorch availability for OpenVoice
-        try:
-            import torch
-            logger.info(f"🔥 PyTorch version: {torch.__version__}")
-            logger.info(f"🔥 PyTorch CUDA available: {torch.cuda.is_available()}")
-        except ImportError:
-            logger.warning("⚠️ PyTorch not available - will use audio effects fallback")
-        
-        # Check PDF processing libraries
-        try:
-            import PyPDF2
-            import pdfplumber
-            logger.info("📚 PDF processing libraries available: PyPDF2 + pdfplumber")
-        except ImportError as e:
-            logger.error(f"❌ PDF processing libraries missing: {e}")
-        
-        # Initialize OpenVoice in background (offline setup)
-        asyncio.create_task(initialize_openvoice_background())
-        
-        logger.info("✅ OFFLINE AudioBook API startup completed")
-        
-    except Exception as e:
-        logger.error(f"❌ Startup initialization failed: {e}")
-        logger.info("🔄 Continuing with basic functionality...")
-
-async def initialize_openvoice_background():
-    """Initialize OpenVoice in background during startup"""
-    try:
-        logger.info("Background: Setting up OpenVoice V2...")
-        
-        # Setup environment
-        setup_success = await setup_openvoice_environment()
-        if setup_success:
-            logger.info("Background: OpenVoice environment setup completed")
-            
-            # Download models
-            models_success = await download_openvoice_models()
-            if models_success:
-                logger.info("Background: OpenVoice models downloaded successfully")
-            else:
-                logger.warning("Background: OpenVoice models download failed")
-        else:
-            logger.warning("Background: OpenVoice environment setup failed")
-            
-    except Exception as e:
-        logger.error(f"Background OpenVoice initialization failed: {e}")
-
 # Utility functions
 def clean_text(text):
     """Clean extracted text"""
@@ -816,165 +245,6 @@ def safe_cleanup(file_path: str):
             logger.info(f"Cleaned up: {file_path}")
     except Exception as e:
         logger.warning(f"Cleanup failed {file_path}: {e}")
-
-async def enhanced_text_to_speech(text: str, language: str = "en", output_path: str = None) -> str:
-    """Enhanced OFFLINE TTS conversion with chunking for large text - NO API calls"""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    import threading
-    
-    logger.info(f"Starting enhanced OFFLINE TTS conversion for {len(text)} characters")
-    
-    if not output_path:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_path = os.path.join(config.TEMP_DIR, f"enhanced_tts_{timestamp}.wav")
-    
-    # If text is small, use direct offline conversion
-    if len(text) <= 5000:
-        try:
-            logger.info("Using direct offline TTS for small text")
-            result_path = offline_text_to_speech(text, output_path, language)
-            
-            # Check if we got a text fallback file instead of audio
-            if result_path.endswith('.txt'):
-                logger.warning("TTS fallback created text file, creating dummy audio file")
-                # Create a minimal audio file for the pipeline
-                dummy_audio_path = result_path.replace('.txt', '.wav')
-                
-                # Try to create a very simple audio file using available tools
-                try:
-                    # Create a simple silence audio file
-                    import struct
-                    import wave
-                    
-                    # Create 1 second of silence at 44100 Hz, 16-bit
-                    sample_rate = 44100
-                    duration = 1  # 1 second
-                    frames = sample_rate * duration
-                    
-                    with wave.open(dummy_audio_path, 'w') as wav_file:
-                        wav_file.setnchannels(1)  # mono
-                        wav_file.setsampwidth(2)  # 16-bit
-                        wav_file.setframerate(sample_rate)
-                        
-                        # Write silence (zeros)
-                        silence = struct.pack('<h', 0) * frames
-                        wav_file.writeframes(silence)
-                    
-                    logger.info(f"Created dummy audio file: {dummy_audio_path}")
-                    return dummy_audio_path
-                    
-                except Exception as audio_error:
-                    logger.warning(f"Could not create dummy audio: {audio_error}")
-                    return result_path  # Return text file
-            
-            logger.info(f"Direct offline TTS completed: {result_path}")
-            return result_path
-        except Exception as e:
-            logger.error(f"Direct offline TTS failed: {e}")
-            raise e
-    
-    # For large text, use chunking approach with offline TTS
-    logger.info("Using chunked offline TTS for large text")
-    
-    # Split text into chunks (approximately 2000 characters each for offline TTS efficiency)
-    chunk_size = 2000
-    text_chunks = []
-    
-    # Smart chunking - try to break at sentence boundaries
-    sentences = text.split('. ')
-    current_chunk = ""
-    
-    for sentence in sentences:
-        if len(current_chunk) + len(sentence) + 2 <= chunk_size:
-            current_chunk += sentence + ". "
-        else:
-            if current_chunk.strip():
-                text_chunks.append(current_chunk.strip())
-            current_chunk = sentence + ". "
-    
-    # Add the last chunk
-    if current_chunk.strip():
-        text_chunks.append(current_chunk.strip())
-    
-    logger.info(f"Split text into {len(text_chunks)} chunks")
-    
-    # Process chunks with threading (offline TTS)
-    num_threads = min(2, len(text_chunks))  # Max 2 threads for offline TTS (less resource intensive)
-    temp_files = []
-    
-    def process_chunk(chunk_text, chunk_index):
-        """Process a single chunk with offline TTS"""
-        try:
-            chunk_file = os.path.join(config.TEMP_DIR, f"temp_chunk_{chunk_index}.wav")
-            offline_text_to_speech(chunk_text, chunk_file, language)
-            logger.info(f"Offline chunk {chunk_index + 1} completed")
-            return chunk_file
-        except Exception as e:
-            logger.error(f"Offline chunk {chunk_index + 1} failed: {e}")
-            return None
-    
-    # Process chunks in parallel
-    with ThreadPoolExecutor(max_workers=num_threads) as executor:
-        # Submit all tasks
-        future_to_index = {
-            executor.submit(process_chunk, chunk, i): i 
-            for i, chunk in enumerate(text_chunks)
-        }
-        
-        # Collect results in order
-        chunk_files = [None] * len(text_chunks)
-        for future in as_completed(future_to_index):
-            index = future_to_index[future]
-            try:
-                result = future.result()
-                if result:
-                    chunk_files[index] = result
-                    temp_files.append(result)
-            except Exception as e:
-                logger.error(f"Chunk {index + 1} processing error: {e}")
-    
-    # Filter out failed chunks
-    valid_chunks = [f for f in chunk_files if f and os.path.exists(f)]
-    
-    if not valid_chunks:
-        logger.error("All chunks failed to process")
-        raise Exception("TTS conversion failed for all chunks")
-    
-    logger.info(f"Successfully processed {len(valid_chunks)}/{len(text_chunks)} chunks")
-    
-    # Combine audio files (simplified approach for cloud deployment)
-    try:
-        logger.info("Combining audio chunks...")
-        
-        # Method 1: Simple binary concatenation for MP3 (works for most cases)
-        with open(output_path, 'wb') as outfile:
-            for i, chunk_file in enumerate(valid_chunks):
-                logger.info(f"Adding chunk {i+1}/{len(valid_chunks)}")
-                with open(chunk_file, 'rb') as infile:
-                    outfile.write(infile.read())
-        
-        logger.info("Audio chunks combined successfully")
-        
-    except Exception as e:
-        logger.error(f"Audio combination failed: {e}")
-        # Fallback: use first chunk only
-        if valid_chunks:
-            import shutil
-            shutil.copy2(valid_chunks[0], output_path)
-            logger.warning("Using first chunk only as fallback")
-        else:
-            raise Exception("No valid audio chunks to combine")
-    
-    # Cleanup temp files
-    for temp_file in temp_files:
-        try:
-            if os.path.exists(temp_file):
-                os.remove(temp_file)
-        except Exception:
-            pass  # Ignore cleanup errors
-    
-    logger.info(f"Enhanced TTS completed: {output_path}")
-    return output_path
 
 async def save_uploaded_file(file_data, filename: str) -> str:
     """Save uploaded file to temp directory"""
@@ -998,57 +268,23 @@ async def save_uploaded_file(file_data, filename: str) -> str:
     except Exception as e:
         logger.error(f"File save error: {e}")
         raise HTTPException(status_code=400, detail=f"File save failed: {str(e)}")
-    """Save uploaded file to temp directory"""
-    try:
-        ensure_temp_dir()
-        temp_path = os.path.join(config.TEMP_DIR, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{filename}")
-        
-        if hasattr(file_data, 'file'):
-            with open(temp_path, "wb") as buffer:
-                shutil.copyfileobj(file_data.file, buffer)
-        elif hasattr(file_data, 'read'):
-            with open(temp_path, "wb") as buffer:
-                buffer.write(file_data.read())
-        else:
-            with open(temp_path, "wb") as buffer:
-                buffer.write(file_data)
-        
-        logger.info(f"File saved: {temp_path}")
-        return temp_path
-        
-    except Exception as e:
-        logger.error(f"File save error: {e}")
-        raise HTTPException(status_code=400, detail=f"File save failed: {str(e)}")
 
-# Enhanced PDF text extraction (integrated from your main.py)
+# Enhanced PDF text extraction
 async def extract_pdf_text(pdf_path: str) -> str:
-    """Enhanced OFFLINE PDF text extraction with PyPDF2 and pdfplumber - NO API calls"""
-    logger.info("Starting enhanced OFFLINE PDF text extraction")
+    """Extract text from PDF with multiple methods"""
+    logger.info("Starting PDF text extraction")
     extracted_text = ""
     
-    def clean_text(text):
-        """Clean extracted text by removing extra whitespace and unwanted characters"""
-        import re
-        # Remove multiple spaces and newlines
-        text = re.sub(r'\s+', ' ', text)
-        # Remove special characters but keep basic punctuation
-        text = re.sub(r'[^\w\s.,!?-]', '', text)
-        return text.strip()
-    
-    # Method 1: Enhanced PyPDF2 extraction
+    # Method 1: PyPDF2 Enhanced
     try:
-        logger.info("Trying enhanced PyPDF2 extraction...")
+        logger.info("Trying PyPDF2 extraction...")
         with open(pdf_path, "rb") as pdf_file:
             pdf_reader = PyPDF2.PdfReader(pdf_file)
             total_pages = len(pdf_reader.pages)
             logger.info(f"PDF has {total_pages} pages")
             
-            chars_extracted = 0
-            max_chars = 100000  # 100k characters maximum
-            
-            for page_num in range(total_pages):
-                if chars_extracted >= max_chars:
-                    logger.info(f"Reached maximum character limit: {max_chars}")
+            for page_num in range(min(20, total_pages)):
+                if len(extracted_text) >= config.MAX_TEXT_LENGTH:
                     break
                 
                 try:
@@ -1056,71 +292,57 @@ async def extract_pdf_text(pdf_path: str) -> str:
                     page_text = page.extract_text()
                     
                     if page_text and page_text.strip():
-                        # Clean the text using your method
                         page_text = clean_text(page_text)
-                        
-                        # Add to total text
-                        remaining_chars = max_chars - chars_extracted
+                        remaining_chars = config.MAX_TEXT_LENGTH - len(extracted_text)
                         extracted_text += page_text[:remaining_chars] + " "
-                        chars_extracted = len(extracted_text)
-                        
-                        # Show progress
-                        progress = min(100, (chars_extracted / max_chars) * 100)
-                        logger.info(f"Progress: {progress:.1f}% ({chars_extracted}/{max_chars} characters)")
+                        logger.info(f"Extracted {len(page_text)} chars from page {page_num + 1}")
                         
                 except Exception as e:
                     logger.warning(f"Error on page {page_num + 1}: {e}")
                     continue
             
-            logger.info(f"Enhanced PyPDF2 extracted {len(extracted_text)} characters")
+            logger.info(f"PyPDF2 extracted {len(extracted_text)} characters")
             
     except Exception as e:
-        logger.error(f"Enhanced PyPDF2 failed: {e}")
+        logger.error(f"PyPDF2 failed: {e}")
     
-    # Method 2: pdfplumber fallback for better text extraction (if available)
-    if len(extracted_text.strip()) < 100 and PDFPLUMBER_AVAILABLE:
-        try:
-            logger.info("Trying pdfplumber extraction as fallback...")
-            with pdfplumber.open(pdf_path) as pdf:
-                total_pages = len(pdf.pages)
-                logger.info(f"pdfplumber: PDF has {total_pages} pages")
-                
-                chars_extracted = 0
-                max_chars = 100000
-                
-                for page_num, page in enumerate(pdf.pages):
-                    if chars_extracted >= max_chars:
-                        logger.info(f"pdfplumber: Reached maximum character limit: {max_chars}")
-                        break
-                    
-                    try:
-                        page_text = page.extract_text()
-                        
-                        if page_text and page_text.strip():
-                            # Clean the text
-                            page_text = clean_text(page_text)
-                            
-                            # Add to total text
-                            remaining_chars = max_chars - chars_extracted
-                            extracted_text += page_text[:remaining_chars] + " "
-                            chars_extracted = len(extracted_text)
-                            
-                            # Show progress
-                            progress = min(100, (chars_extracted / max_chars) * 100)
-                            logger.info(f"pdfplumber Progress: {progress:.1f}% ({chars_extracted}/{max_chars} characters)")
-                            
-                    except Exception as e:
-                        logger.warning(f"pdfplumber error on page {page_num + 1}: {e}")
-                        continue
-                
-                logger.info(f"pdfplumber extracted {len(extracted_text)} characters")
-                        
-        except Exception as e:
-            logger.error(f"pdfplumber extraction failed: {e}")
-    
-    # Fallback sample text if all extraction methods fail
+    # Method 2: Try installing and using PyMuPDF if PyPDF2 fails
     if len(extracted_text.strip()) < 100:
-        logger.warning("PDF extraction failed, using sample text")
+        try:
+            logger.info("Installing PyMuPDF for better extraction...")
+            subprocess.run(["pip", "install", "PyMuPDF"], check=True, capture_output=True)
+            import fitz
+            
+            pdf_document = fitz.open(pdf_path)
+            extracted_text = ""
+            
+            for page_num in range(min(20, len(pdf_document))):
+                if len(extracted_text) >= config.MAX_TEXT_LENGTH:
+                    break
+                
+                try:
+                    page = pdf_document.load_page(page_num)
+                    page_text = page.get_text()
+                    
+                    if page_text and page_text.strip():
+                        page_text = clean_text(page_text)
+                        remaining_chars = config.MAX_TEXT_LENGTH - len(extracted_text)
+                        extracted_text += page_text[:remaining_chars] + " "
+                        logger.info(f"PyMuPDF extracted {len(page_text)} chars from page {page_num + 1}")
+                        
+                except Exception as e:
+                    logger.warning(f"PyMuPDF error on page {page_num + 1}: {e}")
+                    continue
+            
+            pdf_document.close()
+            logger.info(f"PyMuPDF extracted {len(extracted_text)} characters")
+            
+        except Exception as e:
+            logger.error(f"PyMuPDF failed: {e}")
+    
+    # Fallback sample text if all methods fail
+    if len(extracted_text.strip()) < 100:
+        logger.warning("All extraction methods failed, using sample text")
         extracted_text = """
         Welcome to our advanced voice cloning system. This comprehensive platform transforms 
         written content into personalized audio experiences using cutting-edge AI technology. 
@@ -1131,71 +353,36 @@ async def extract_pdf_text(pdf_path: str) -> str:
         the system's ability to handle text processing and speech generation effectively.
         """
     
-    # Ensure we don't exceed the cloud limit but allow up to 100k characters
-    final_text = extracted_text[:min(100000, config.MAX_TEXT_LENGTH)]
-    logger.info(f"Final extracted text length: {len(final_text)} characters")
+    # Ensure we don't exceed the limit
+    extracted_text = extracted_text[:config.MAX_TEXT_LENGTH]
+    logger.info(f"Final extracted text length: {len(extracted_text)} characters")
     
-    return final_text.strip()
+    return extracted_text.strip()
 
 # API Endpoints
 @app.get("/")
-@app.head("/")
 async def root():
     """Root endpoint with API information"""
     return {
         "service": config.API_TITLE,
         "version": config.API_VERSION,
         "status": "running",
-        "processing_mode": "OFFLINE_ONLY - No external APIs used",
-        "python_version": "3.9.18 (forced)",
-        "features": [
-            "Offline PDF text extraction (PyPDF2 + pdfplumber)",
-            "Offline text-to-speech (pyttsx3)",
-            "Offline speech-to-speech conversion (OpenVoice V2)",
-            "No internet required for processing"
-        ],
         "endpoints": {
             "health": "/health",
-            "tts_voices": "/tts-voices",
-            "init_openvoice": "/init-openvoice",
             "extract_text": "/extract-text",
             "text_to_speech": "/text-to-speech",
             "audiobook_pipeline": "/audiobook-pipeline",
-            "audiobook_json": "/audiobook-json",
-            "download": "/download/{filename}",
             "docs": "/docs"
-        },
-        "description": "API for PDF to Speech-to-Speech conversion with OpenVoice V2",
-        "timestamp": datetime.now().isoformat()
+        }
     }
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for offline processing"""
-    openvoice_status = "available" if Path("OpenVoice").exists() else "not_setup"
-    
-    # Check TTS engine availability
-    if PYTTSX3_AVAILABLE:
-        try:
-            import pyttsx3
-            engine = pyttsx3.init()
-            tts_status = "available"
-            engine.stop()
-        except Exception as e:
-            tts_status = f"initialization_error: {str(e)}"
-    else:
-        tts_status = "fallback_mode"
-    
+    """Health check endpoint"""
     return {
         "status": "healthy",
         "service": config.API_TITLE,
         "version": config.API_VERSION,
-        "processing_mode": config.PROCESSING_MODE,
-        "python_target_version": config.PYTHON_VERSION,
-        "openvoice_status": openvoice_status,
-        "offline_tts_status": tts_status,
-        "pyttsx3_available": PYTTSX3_AVAILABLE,
-        "pdfplumber_available": PDFPLUMBER_AVAILABLE,
         "timestamp": datetime.now().isoformat(),
         "system": {
             "platform": platform.system(),
@@ -1203,149 +390,6 @@ async def health_check():
             "temp_dir": config.TEMP_DIR
         }
     }
-
-@app.get("/tts-voices")
-async def get_tts_voices():
-    """Get available TTS voices endpoint"""
-    try:
-        voices = get_offline_tts_voices()
-        return {
-            "success": True,
-            "voices": voices,
-            "count": len(voices),
-            "pyttsx3_available": PYTTSX3_AVAILABLE,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return JSONResponse({
-            "success": False,
-            "error": str(e),
-            "pyttsx3_available": PYTTSX3_AVAILABLE,
-            "timestamp": datetime.now().isoformat()
-        }, status_code=500)
-
-@app.get("/tts-voices")
-async def get_tts_voices():
-    """Get available offline TTS voices"""
-    try:
-        voices = get_offline_tts_voices()
-        return {
-            "success": True,
-            "voices": voices,
-            "total_voices": len(voices),
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return JSONResponse({
-            "success": False,
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }, status_code=500)
-
-@app.post("/init-openvoice")
-async def initialize_openvoice():
-    """Initialize OpenVoice V2 environment and download models"""
-    try:
-        logger.info("Starting OpenVoice V2 initialization...")
-        
-        # Setup environment
-        setup_success = await setup_openvoice_environment()
-        if not setup_success:
-            return JSONResponse({
-                "success": False,
-                "message": "Failed to setup OpenVoice environment",
-                "timestamp": datetime.now().isoformat()
-            }, status_code=500)
-        
-        # Download models
-        models_success = await download_openvoice_models()
-        if not models_success:
-            return JSONResponse({
-                "success": False,
-                "message": "Failed to download OpenVoice models",
-                "timestamp": datetime.now().isoformat()
-            }, status_code=500)
-        
-        logger.info("OpenVoice V2 initialization completed successfully")
-        
-        return {
-            "success": True,
-            "message": "OpenVoice V2 initialized successfully",
-            "environment_setup": setup_success,
-            "models_downloaded": models_success,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"OpenVoice initialization failed: {e}")
-        return JSONResponse({
-            "success": False,
-            "message": f"Initialization failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }, status_code=500)
-
-@app.post("/test-voice-cloning")
-async def test_voice_cloning(
-    source_audio: UploadFile = File(...),
-    reference_audio: UploadFile = File(None),
-    voice_style: str = Form("default")
-):
-    """Test endpoint for voice cloning functionality"""
-    try:
-        logger.info("Testing voice cloning functionality...")
-        
-        # Save source audio
-        source_path = await save_uploaded_file(source_audio, "test_source.mp3")
-        
-        # Create output filename
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_filename = f"test_cloned_{timestamp}.mp3"
-        output_path = os.path.join(config.TEMP_DIR, output_filename)
-        
-        if reference_audio:
-            # Test OpenVoice V2 cloning
-            reference_path = await save_uploaded_file(reference_audio, "test_reference.mp3")
-            logger.info("Testing OpenVoice V2 voice cloning...")
-            result_path = await enhanced_openvoice_clone_voice(source_path, reference_path, output_path)
-            method = "OpenVoice V2"
-            safe_cleanup(reference_path)
-        else:
-            # Test voice effects
-            logger.info(f"Testing voice effects: {voice_style}")
-            result_path = apply_voice_effects(source_path, output_path, voice_style)
-            method = f"Voice Effects ({voice_style})"
-        
-        # Cleanup source file
-        safe_cleanup(source_path)
-        
-        # Check if output was created
-        if os.path.exists(result_path):
-            file_size = os.path.getsize(result_path)
-            
-            return {
-                "success": True,
-                "message": f"Voice cloning test completed using {method}",
-                "download_url": f"/download/{output_filename}",
-                "method": method,
-                "file_size_bytes": file_size,
-                "file_size_mb": round(file_size / (1024 * 1024), 2),
-                "timestamp": datetime.now().isoformat()
-            }
-        else:
-            return JSONResponse({
-                "success": False,
-                "message": "Voice cloning test failed - no output generated",
-                "method": method,
-                "timestamp": datetime.now().isoformat()
-            }, status_code=500)
-            
-    except Exception as e:
-        logger.error(f"Voice cloning test failed: {e}")
-        return JSONResponse({
-            "success": False,
-            "message": f"Test failed: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }, status_code=500)
 
 @app.post("/extract-text")
 async def extract_text_endpoint(file: UploadFile = File(...)):
@@ -1403,11 +447,14 @@ async def text_to_speech_endpoint(
         logger.warning(f"Text truncated to {config.MAX_TEXT_LENGTH} characters")
     
     try:
-        # Create offline TTS
-        audio_file = os.path.join(config.TEMP_DIR, f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav")
-        offline_text_to_speech(text, audio_file, language)
+        # Create TTS
+        tts = gTTS(text=text, lang=language, slow=False)
         
-        logger.info(f"Offline TTS audio saved: {audio_file}")
+        # Save audio file
+        audio_file = os.path.join(config.TEMP_DIR, f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3")
+        tts.save(audio_file)
+        
+        logger.info(f"TTS audio saved: {audio_file}")
         
         return {
             "success": True,
@@ -1433,6 +480,7 @@ async def get_progress(task_id: str):
 @app.post("/audiobook-json")
 async def audiobook_pipeline_json(request: Request):
     """Audiobook pipeline that returns JSON with download URL (easier for n8n)"""
+    import uuid
     task_id = str(uuid.uuid4())
     
     logger.info(f"Starting audiobook pipeline (JSON mode) with task_id: {task_id}")
@@ -1445,20 +493,13 @@ async def audiobook_pipeline_json(request: Request):
         # Extract parameters
         language = form.get("language", "en")
         output_name = form.get("output_name", "audiobook")
-        voice_style = form.get("voice_style", "default")
-        text_portion = float(form.get("text_portion", "1.0"))  # Support partial text processing
         
         # Get PDF file
         pdf_file = form.get("pdf_file")
         if not pdf_file:
             raise HTTPException(status_code=400, detail="PDF file is required")
         
-        # Get reference audio (optional for voice cloning)
-        reference_audio = form.get("reference_audio")
-        
-        logger.info(f"Processing PDF file, language: {language}, voice_style: {voice_style}")
-        logger.info(f"Reference audio provided: {'Yes' if reference_audio else 'No'}")
-        logger.info(f"Text portion to process: {text_portion}")
+        logger.info(f"Processing PDF file, language: {language}")
         
         temp_files = []
         
@@ -1474,146 +515,31 @@ async def audiobook_pipeline_json(request: Request):
             if len(extracted_text.strip()) < 10:
                 raise HTTPException(status_code=400, detail="No meaningful text extracted from PDF")
             
-            # Step 3: Apply text portion if specified (for testing or partial processing)
-            if text_portion < 1.0:
-                portion_length = int(len(extracted_text) * text_portion)
-                extracted_text = extracted_text[:portion_length]
-                logger.info(f"Using {text_portion*100}% of text: {len(extracted_text)} characters")
+            # Step 3: Convert to speech
+            logger.info("Converting text to speech...")
+            tts = gTTS(text=extracted_text, lang=language, slow=False)
             
-            # Step 4: Convert to speech (Enhanced TTS with chunking)
-            logger.info("Converting text to speech with enhanced processing...")
-            temp_tts_file = await enhanced_text_to_speech(extracted_text, language)
-            temp_files.append(temp_tts_file)
-            
-            # Step 5: Apply Speech-to-Speech conversion (Voice Cloning)
-            logger.info("Starting Speech-to-Speech conversion...")
+            # Create filename with timestamp
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            final_filename = f"{output_name}_{timestamp}.mp3"
-            final_audio_file = os.path.join(config.TEMP_DIR, final_filename)
-            
-            if reference_audio:
-                # Save reference audio
-                logger.info("Saving reference audio for OpenVoice V2 cloning...")
-                reference_path = await save_uploaded_file(reference_audio, f"reference_{timestamp}.mp3")
-                temp_files.append(reference_path)
-                
-                # Apply OpenVoice V2 voice cloning
-                logger.info("Applying OpenVoice V2 voice cloning...")
-                final_audio = await enhanced_openvoice_clone_voice(temp_tts_file, reference_path, final_audio_file)
-                
-                processing_method = "OpenVoice V2 Voice Cloning"
-            else:
-                # Apply voice effects as fallback
-                logger.info("No reference audio provided, applying voice effects...")
-                final_audio = apply_voice_effects(temp_tts_file, final_audio_file, voice_style)
-                processing_method = f"Voice Effects ({voice_style})"
-            
-            # Verify final audio file exists
-            if not os.path.exists(final_audio) or os.path.getsize(final_audio) == 0:
-                raise HTTPException(status_code=500, detail="Failed to generate final audio file")
-            
-            file_size = os.path.getsize(final_audio)
-            logger.info(f"Successfully created audiobook: {final_audio} ({file_size} bytes)")
-            
-            # Return JSON response for n8n
-            return JSONResponse({
-                "success": True,
-                "message": "Audiobook created successfully with Speech-to-Speech conversion",
-                "download_url": f"/download/{final_filename}",
-                "full_download_url": f"https://audiobook-cloud.onrender.com/download/{final_filename}",
-                "filename": final_filename,
-                "details": {
-                    "text_length": len(extracted_text),
-                    "language": language,
-                    "voice_style": voice_style,
-                    "processing_method": processing_method,
-                    "reference_audio_used": reference_audio is not None,
-                    "file_size_bytes": file_size,
-                    "file_size_mb": round(file_size / (1024 * 1024), 2),
-                    "output_name": output_name,
-                    "text_portion_processed": text_portion,
-                    "processing_time": "completed",
-                    "task_id": task_id
-                },
-                "text_preview": extracted_text[:200] + "..." if len(extracted_text) > 200 else extracted_text,
-                "timestamp": datetime.now().isoformat()
-            })
-            
-        except Exception as e:
-            # Cleanup on error
-            for temp_file in temp_files:
-                safe_cleanup(temp_file)
-            raise e
-        
-    except Exception as e:
-        logger.error(f"Audiobook pipeline failed: {e}")
-        return JSONResponse({
-            "success": False,
-            "error": str(e),
-            "message": "Audiobook creation failed",
-            "task_id": task_id,
-            "timestamp": datetime.now().isoformat()
-        }, status_code=500)
-        
-        try:
-            # Step 1: Save PDF file
-            pdf_path = await save_uploaded_file(pdf_file, "input_book.pdf")
-            temp_files.append(pdf_path)
-            
-            # Step 2: Extract text
-            logger.info("Extracting text from PDF...")
-            extracted_text = await extract_pdf_text(pdf_path)
-            
-            if len(extracted_text.strip()) < 10:
-                raise HTTPException(status_code=400, detail="No meaningful text extracted from PDF")
-            
-            # Step 3: Convert to speech (Enhanced TTS with chunking)
-            logger.info("Converting text to speech with enhanced processing...")
-            temp_tts_file = await enhanced_text_to_speech(extracted_text, language)
-            temp_files.append(temp_tts_file)
-            
-            # Step 4: Apply Speech-to-Speech conversion (Voice Cloning)
-            logger.info("Starting Speech-to-Speech conversion...")
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            final_filename = f"{output_name}_{timestamp}.mp3"
-            final_audio_file = os.path.join(config.TEMP_DIR, final_filename)
-            
-            if reference_audio:
-                # Save reference audio
-                logger.info("Saving reference audio for OpenVoice V2 cloning...")
-                reference_path = await save_uploaded_file(reference_audio, f"reference_{timestamp}.mp3")
-                temp_files.append(reference_path)
-                
-                # Apply OpenVoice V2 voice cloning
-                logger.info("Applying OpenVoice V2 voice cloning...")
-                final_audio = await enhanced_openvoice_clone_voice(temp_tts_file, reference_path, final_audio_file)
-                
-                processing_method = "OpenVoice V2 Voice Cloning"
-            else:
-                # Apply voice effects as fallback
-                logger.info(f"Applying voice effects: {voice_style}")
-                final_audio = apply_voice_effects(temp_tts_file, final_audio_file, voice_style)
-                
-                processing_method = f"Voice Effects ({voice_style})"
+            filename = f"{output_name}_{timestamp}.mp3"
+            audio_file = os.path.join(config.TEMP_DIR, filename)
+            tts.save(audio_file)
             
             # Get file size
-            file_size = os.path.getsize(final_audio_file) if os.path.exists(final_audio_file) else 0
+            file_size = os.path.getsize(audio_file) if os.path.exists(audio_file) else 0
             
-            logger.info(f"Audiobook pipeline completed successfully using {processing_method}")
+            logger.info("Audiobook pipeline completed successfully")
             
             # Return JSON with download information
             return JSONResponse({
                 "success": True,
-                "message": "Audiobook created successfully with Speech-to-Speech conversion",
-                "download_url": f"/download/{final_filename}",
-                "full_download_url": f"https://audiobook-cloud.onrender.com/download/{final_filename}",
-                "filename": final_filename,
+                "message": "Audiobook created successfully",
+                "download_url": f"/download/{filename}",
+                "full_download_url": f"https://audiobook-cloud.onrender.com/download/{filename}",
+                "filename": filename,
                 "details": {
                     "text_length": len(extracted_text),
                     "language": language,
-                    "voice_style": voice_style,
-                    "processing_method": processing_method,
-                    "reference_audio_used": reference_audio is not None,
                     "file_size_bytes": file_size,
                     "file_size_mb": round(file_size / (1024 * 1024), 2),
                     "output_name": output_name,
@@ -1634,120 +560,8 @@ async def audiobook_pipeline_json(request: Request):
         logger.error(f"Pipeline error: {e}")
         raise HTTPException(status_code=500, detail=f"Pipeline failed: {str(e)}")
 
-@app.post("/audiobook")
-async def audiobook_simple(
-    pdf_file: UploadFile = File(..., description="PDF file to convert"),
-    reference_audio: UploadFile = File(None, description="Reference audio for voice cloning"),
-    language: str = Form("en", description="Language for TTS"),
-    output_name: str = Form("audiobook", description="Output filename"),
-    voice_style: str = Form("default", description="Voice style if no reference audio"),
-    text_portion: float = Form(1.0, description="Portion of text to process (0.1 = 10%)")
-):
-    """Simplified audiobook endpoint optimized for n8n with form parameters"""
-    task_id = str(uuid.uuid4())
-    
-    logger.info(f"Starting simple audiobook conversion with task_id: {task_id}")
-    logger.info(f"Parameters: language={language}, output_name={output_name}, text_portion={text_portion}")
-    
-    temp_files = []
-    
-    try:
-        # Step 1: Save PDF file
-        pdf_path = await save_uploaded_file(pdf_file, "input_book.pdf")
-        temp_files.append(pdf_path)
-        
-        # Step 2: Extract text
-        logger.info("Extracting text from PDF...")
-        extracted_text = await extract_pdf_text(pdf_path)
-        
-        if len(extracted_text.strip()) < 10:
-            raise HTTPException(status_code=400, detail="No meaningful text extracted from PDF")
-        
-        # Step 3: Apply text portion if specified
-        if text_portion < 1.0:
-            portion_length = int(len(extracted_text) * text_portion)
-            extracted_text = extracted_text[:portion_length]
-            logger.info(f"Using {text_portion*100}% of text: {len(extracted_text)} characters")
-        
-        # Step 4: Convert to speech (Enhanced TTS with chunking)
-        logger.info("Converting text to speech with enhanced processing...")
-        temp_tts_file = await enhanced_text_to_speech(extracted_text, language)
-        temp_files.append(temp_tts_file)
-        
-        # Step 5: Apply Speech-to-Speech conversion (Voice Cloning)
-        logger.info("Starting Speech-to-Speech conversion...")
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        final_filename = f"{output_name}_{timestamp}.mp3"
-        final_audio_file = os.path.join(config.TEMP_DIR, final_filename)
-        
-        if reference_audio:
-            # Save reference audio
-            logger.info("Saving reference audio for OpenVoice V2 cloning...")
-            reference_path = await save_uploaded_file(reference_audio, f"reference_{timestamp}.mp3")
-            temp_files.append(reference_path)
-            
-            # Apply OpenVoice V2 voice cloning
-            logger.info("Applying OpenVoice V2 voice cloning...")
-            final_audio = await enhanced_openvoice_clone_voice(temp_tts_file, reference_path, final_audio_file)
-            
-            processing_method = "OpenVoice V2 Voice Cloning"
-        else:
-            # Apply voice effects as fallback
-            logger.info("No reference audio provided, applying voice effects...")
-            final_audio = apply_voice_effects(temp_tts_file, final_audio_file, voice_style)
-            processing_method = f"Voice Effects ({voice_style})"
-        
-        # Verify final audio file exists
-        if not os.path.exists(final_audio) or os.path.getsize(final_audio) == 0:
-            raise HTTPException(status_code=500, detail="Failed to generate final audio file")
-        
-        file_size = os.path.getsize(final_audio)
-        logger.info(f"Successfully created audiobook: {final_audio} ({file_size} bytes)")
-        
-        # Return JSON with download information
-        return JSONResponse({
-            "success": True,
-            "message": "Audiobook created successfully with Speech-to-Speech conversion",
-            "download_url": f"/download/{final_filename}",
-            "full_download_url": f"https://audiobook-cloud.onrender.com/download/{final_filename}",
-            "filename": final_filename,
-            "details": {
-                "text_length": len(extracted_text),
-                "language": language,
-                "voice_style": voice_style,
-                "processing_method": processing_method,
-                "reference_audio_used": reference_audio is not None,
-                "file_size_bytes": file_size,
-                "file_size_mb": round(file_size / (1024 * 1024), 2),
-                "output_name": output_name,
-                "text_portion_processed": text_portion,
-                "processing_time": "completed",
-                "task_id": task_id
-            },
-            "text_preview": extracted_text[:200] + "..." if len(extracted_text) > 200 else extracted_text,
-            "timestamp": datetime.now().isoformat()
-        })
-        
-    except Exception as e:
-        # Cleanup on error
-        for temp_file in temp_files:
-            safe_cleanup(temp_file)
-        
-        logger.error(f"Audiobook creation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Audiobook creation failed: {str(e)}")
-    
-    finally:
-        # Optional cleanup of temp files after some delay
-        asyncio.create_task(delayed_cleanup(temp_files, delay_seconds=300))  # 5 minutes
-
-async def delayed_cleanup(file_list: list, delay_seconds: int = 300):
-    """Clean up temporary files after a delay"""
-    await asyncio.sleep(delay_seconds)
-    for file_path in file_list:
-        safe_cleanup(file_path)
-
-@app.post("/audiobook-pipeline")  
-async def audiobook_pipeline_with_progress(request: Request):
+@app.post("/audiobook-pipeline")
+async def audiobook_pipeline(request: Request):
     """Complete audiobook pipeline for n8n integration with progress tracking"""
     import uuid
     task_id = str(uuid.uuid4())
@@ -1826,9 +640,13 @@ async def audiobook_pipeline_with_progress(request: Request):
                 "message": f"Converting {len(extracted_text)} characters to speech..."
             })
             
-            # Step 3: Convert to speech (Enhanced TTS with chunking)
-            logger.info("Converting text to speech with enhanced processing...")
-            temp_tts_file = await enhanced_text_to_speech(extracted_text, language)
+            # Step 3: Convert to speech
+            logger.info("Converting text to speech...")
+            tts = gTTS(text=extracted_text, lang=language, slow=False)
+            
+            # Create intermediate TTS file
+            temp_tts_file = os.path.join(config.TEMP_DIR, f"temp_tts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3")
+            tts.save(temp_tts_file)
             
             progress_status[task_id].update({
                 "status": "processing",
@@ -1852,7 +670,7 @@ async def audiobook_pipeline_with_progress(request: Request):
                 temp_files.append(reference_path)
                 
                 logger.info("Starting OpenVoice V2 cloning...")
-                final_audio = await enhanced_openvoice_clone_voice(temp_tts_file, reference_path, audio_file)
+                final_audio = await openvoice_clone_voice(temp_tts_file, reference_path, audio_file)
             else:
                 # No reference audio, use voice effects as fallback
                 progress_status[task_id].update({
@@ -1958,10 +776,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Server startup
 if __name__ == "__main__":
     logger.info(f"Starting {config.API_TITLE} v{config.API_VERSION}")
-    logger.info(f"🔒 Processing Mode: {config.PROCESSING_MODE}")
-    logger.info(f"🐍 Target Python Version: {config.PYTHON_VERSION}")
-    logger.info(f"🚀 Server will run on port {config.PORT}")
-    logger.info("📋 Features: Offline PDF extraction + Offline TTS + Offline Speech-to-Speech")
+    logger.info(f"Server will run on port {config.PORT}")
     
     uvicorn.run(
         app,

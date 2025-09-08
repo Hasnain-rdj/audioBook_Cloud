@@ -1,37 +1,16 @@
-# Cloud deployment requirements - Python 3.9 compatible with ALL dependencies
-fastapi==0.85.0
-uvicorn[standard]==0.19.0
-python-multipart==0.0.5
+# Cloud deployment requirements for Render.com with OpenVoice V2
+fastapi==0.103.0
+uvicorn[standard]==0.23.2
+python-multipart==0.0.6
 PyPDF2==3.0.1
-pyttsx3==2.90
-requests==2.28.2
+gTTS==2.4.0
+requests==2.31.0
 
-# PyTorch and ML dependencies (standard versions compatible with Python 3.9)
-torch==1.13.1
-torchaudio==0.13.1
-
-# Audio processing and ML libraries
-librosa==0.9.2
-soundfile==0.11.0
-numpy==1.23.5
-scipy==1.9.3
-transformers==4.21.3
-accelerate==0.12.0
-diffusers==0.8.0
-
-# Audio utilities
-pydub==0.25.1
-audioread==3.0.0
-resampy==0.4.2
-
-# Additional utilities with Python 3.9 support
-Pillow==9.5.0
-tqdm==4.64.1
-omegaconf==2.2.3
-packaging==21.3
-joblib==1.2.0
-pooch==1.6.0
-decorator==5.1.1
-
-# Git operations for OpenVoice setup
-gitpython==3.1.31
+# OpenVoice V2 dependencies
+torch>=2.0.0
+torchaudio>=2.0.0
+librosa>=0.10.1
+soundfile>=0.12.1
+numpy>=1.21.0
+transformers>=4.21.0
+scipy>=1.9.0
