@@ -4,7 +4,7 @@ services:
     env: python
     plan: starter
     region: oregon
-    buildCommand: "pip install --upgrade pip setuptools wheel && pip install torch==1.13.1+cpu torchaudio==0.13.1+cpu --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && chmod +x build.sh && ./build.sh"
+    buildCommand: "apt-get update && apt-get install -y espeak espeak-data libespeak1 libespeak-dev festival festvox-kallpc16k ffmpeg && pip install --upgrade pip setuptools wheel && pip install torch==1.13.1+cpu torchaudio==0.13.1+cpu --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && chmod +x build.sh && ./build.sh"
     startCommand: "uvicorn audioBook_api:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
@@ -15,6 +15,8 @@ services:
         value: 1
       - key: PIP_NO_CACHE_DIR
         value: 1
+      - key: DEBIAN_FRONTEND
+        value: noninteractive
     autoDeploy: false
     disk:
       name: audiobook-storage
