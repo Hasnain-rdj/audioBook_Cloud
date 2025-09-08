@@ -1,6 +1,6 @@
 """
-AudioBook Voice Cloning API for Render.com Deployment
-Cloud-optimized FastAPI server for PDF to Speech-to-Speech conversion
+AudioBook Voice Cloning API for Render.com Deployment (Python 3.9 + Offline Processing)
+Cloud-optimized FastAPI server for PDF to Speech-to-Speech conversion using OFFLINE scripts only
 """
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request
@@ -12,9 +12,11 @@ import tempfile
 import shutil
 from pathlib import Path
 import PyPDF2
-from gtts import gTTS
-from datetime import datetime
-import subprocess
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
 import logging
 import asyncio
 import time
@@ -23,6 +25,9 @@ import platform
 import requests
 import zipfile
 import uuid
+import re
+import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configure logging for cloud deployment
 logging.basicConfig(
@@ -31,6 +36,96 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]  # Only console logging for cloud
 )
 logger = logging.getLogger(__name__)
+
+# Import PDF processing libraries
+from pathlib import Path
+import PyPDF2
+try:
+    import pdfplumber
+    PDFPLUMBER_AVAILABLE = True
+    logger.info("pdfplumber library loaded successfully")
+except ImportError:
+    PDFPLUMBER_AVAILABLE = False
+    logger.warning("pdfplumber not available, using PyPDF2 only")
+
+# Import offline TTS library
+import pyttsx3
+from datetime import datetime
+import subprocess
+logger.info("pyttsx3 offline TTS library loaded successfully")
+
+# Configure logging for cloud deployment
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler()]  # Only console logging for cloud
+)
+logger = logging.getLogger(__name__)
+
+# Offline Text-to-Speech using pyttsx3
+def offline_text_to_speech(text: str, output_path: str, language: str = "en", voice_rate: int = 200) -> str:
+    """
+    Offline text-to-speech conversion using pyttsx3 (no internet required)
+    """
+    try:
+        logger.info(f"Starting offline TTS conversion for {len(text)} characters")
+        
+        # Initialize pyttsx3 engine
+        engine = pyttsx3.init()
+        
+        # Configure voice settings
+        voices = engine.getProperty('voices')
+        if voices:
+            # Try to set appropriate voice based on language
+            for voice in voices:
+                if language == "en" and ("english" in voice.name.lower() or "en" in voice.id.lower()):
+                    engine.setProperty('voice', voice.id)
+                    break
+                elif language in voice.id.lower():
+                    engine.setProperty('voice', voice.id)
+                    break
+        
+        # Set speech rate (words per minute)
+        engine.setProperty('rate', voice_rate)
+        
+        # Set volume (0.0 to 1.0)
+        engine.setProperty('volume', 0.9)
+        
+        # Convert text to speech and save as audio file
+        engine.save_to_file(text, output_path)
+        engine.runAndWait()
+        
+        # Verify output file was created
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            logger.info(f"Offline TTS completed: {output_path}")
+            return output_path
+        else:
+            logger.error("Offline TTS failed - no output file generated")
+            raise Exception("TTS conversion failed")
+            
+    except Exception as e:
+        logger.error(f"Offline TTS error: {e}")
+        raise Exception(f"TTS conversion failed: {str(e)}")
+
+def get_offline_tts_voices():
+    """Get available offline TTS voices"""
+    try:
+        engine = pyttsx3.init()
+        voices = engine.getProperty('voices')
+        voice_list = []
+        
+        for voice in voices:
+            voice_info = {
+                "id": voice.id,
+                "name": voice.name,
+                "language": getattr(voice, 'languages', ['unknown'])[0] if hasattr(voice, 'languages') else 'unknown'
+            }
+            voice_list.append(voice_info)
+        
+        return voice_list
+    except Exception as e:
+        logger.error(f"Failed to get TTS voices: {e}")
+        return []
 
 # Voice cloning simulation (since OpenVoice is too heavy for cloud)
 def apply_voice_effects(audio_file: str, output_file: str, voice_style: str = "default") -> str:
@@ -512,17 +607,19 @@ def get_se(audio_path, tone_color_converter):
     except Exception as e:
         logger.error(f"Failed to create minimal OpenVoice files: {e}")
 
-# Cloud Configuration
+# Cloud Configuration for Python 3.9 + Offline Processing
 class CloudConfig:
-    API_TITLE = "AudioBook Voice Cloning API"
-    API_VERSION = "1.0.0"
-    API_DESCRIPTION = "Cloud-ready API for PDF text extraction and TTS conversion"
+    API_TITLE = "AudioBook Voice Cloning API (Offline)"
+    API_VERSION = "2.0.0"
+    API_DESCRIPTION = "Python 3.9 Cloud API for OFFLINE PDF text extraction and TTS conversion - No external APIs"
     HOST = "0.0.0.0"
     PORT = int(os.environ.get("PORT", 10000))  # Render.com uses PORT env variable
     TEMP_DIR = "/tmp/voice_cloning"  # Cloud-friendly temp directory
     MAX_FILE_SIZE = 25 * 1024 * 1024  # 25MB for cloud limits
-    MAX_TEXT_LENGTH = 15000  # 15k characters limit
-    TIMEOUT_SECONDS = 300  # 5 minutes for cloud
+    MAX_TEXT_LENGTH = 50000  # 50k characters limit (increased for offline processing)
+    TIMEOUT_SECONDS = 600  # 10 minutes for offline processing
+    PYTHON_VERSION = "3.9.18"
+    PROCESSING_MODE = "OFFLINE_ONLY"
 
 config = CloudConfig()
 
@@ -573,11 +670,13 @@ ensure_temp_dir()
 # Startup event to initialize OpenVoice
 @app.on_event("startup")
 async def startup_event():
-    """Initialize OpenVoice V2 on server startup"""
+    """Initialize offline processing environment on server startup - Python 3.9"""
     try:
         import sys
-        logger.info(f"🚀 Starting server initialization...")
+        logger.info(f"🚀 Starting OFFLINE AudioBook API initialization...")
         logger.info(f"🐍 Python version: {sys.version}")
+        logger.info(f"🎯 Target Python version: {config.PYTHON_VERSION}")
+        logger.info(f"🔒 Processing mode: {config.PROCESSING_MODE}")
         logger.info(f"📂 Working directory: {os.getcwd()}")
         logger.info(f"💾 Available disk space:")
         
@@ -591,18 +690,36 @@ async def startup_event():
         except:
             logger.info("   Could not check disk space")
         
-        # Check if PyTorch is available
+        # Check offline TTS availability
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            voices = engine.getProperty('voices')
+            logger.info(f"🎙️ Offline TTS engine initialized with {len(voices) if voices else 0} voices")
+            engine.stop()
+        except Exception as e:
+            logger.warning(f"⚠️ Offline TTS not available: {e}")
+        
+        # Check PyTorch availability for OpenVoice
         try:
             import torch
             logger.info(f"🔥 PyTorch version: {torch.__version__}")
             logger.info(f"🔥 PyTorch CUDA available: {torch.cuda.is_available()}")
         except ImportError:
-            logger.warning("⚠️ PyTorch not available - will use fallback mode")
+            logger.warning("⚠️ PyTorch not available - will use audio effects fallback")
         
-        # Initialize OpenVoice in background
+        # Check PDF processing libraries
+        try:
+            import PyPDF2
+            import pdfplumber
+            logger.info("📚 PDF processing libraries available: PyPDF2 + pdfplumber")
+        except ImportError as e:
+            logger.error(f"❌ PDF processing libraries missing: {e}")
+        
+        # Initialize OpenVoice in background (offline setup)
         asyncio.create_task(initialize_openvoice_background())
         
-        logger.info("✅ Server startup completed")
+        logger.info("✅ OFFLINE AudioBook API startup completed")
         
     except Exception as e:
         logger.error(f"❌ Startup initialization failed: {e}")
@@ -648,33 +765,32 @@ def safe_cleanup(file_path: str):
         logger.warning(f"Cleanup failed {file_path}: {e}")
 
 async def enhanced_text_to_speech(text: str, language: str = "en", output_path: str = None) -> str:
-    """Enhanced TTS conversion with chunking for large text (integrated from your TTS script)"""
+    """Enhanced OFFLINE TTS conversion with chunking for large text - NO API calls"""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import threading
     
-    logger.info(f"Starting enhanced TTS conversion for {len(text)} characters")
+    logger.info(f"Starting enhanced OFFLINE TTS conversion for {len(text)} characters")
     
     if not output_path:
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_path = os.path.join(config.TEMP_DIR, f"enhanced_tts_{timestamp}.mp3")
+        output_path = os.path.join(config.TEMP_DIR, f"enhanced_tts_{timestamp}.wav")
     
-    # If text is small, use direct conversion
+    # If text is small, use direct offline conversion
     if len(text) <= 5000:
         try:
-            logger.info("Using direct TTS for small text")
-            tts = gTTS(text=text, lang=language, slow=False)
-            tts.save(output_path)
-            logger.info(f"Direct TTS completed: {output_path}")
+            logger.info("Using direct offline TTS for small text")
+            offline_text_to_speech(text, output_path, language)
+            logger.info(f"Direct offline TTS completed: {output_path}")
             return output_path
         except Exception as e:
-            logger.error(f"Direct TTS failed: {e}")
+            logger.error(f"Direct offline TTS failed: {e}")
             raise e
     
-    # For large text, use chunking approach from your script
-    logger.info("Using chunked TTS for large text")
+    # For large text, use chunking approach with offline TTS
+    logger.info("Using chunked offline TTS for large text")
     
-    # Split text into chunks (approximately 4000 characters each for better TTS quality)
-    chunk_size = 4000
+    # Split text into chunks (approximately 2000 characters each for offline TTS efficiency)
+    chunk_size = 2000
     text_chunks = []
     
     # Smart chunking - try to break at sentence boundaries
@@ -695,20 +811,19 @@ async def enhanced_text_to_speech(text: str, language: str = "en", output_path: 
     
     logger.info(f"Split text into {len(text_chunks)} chunks")
     
-    # Process chunks with threading (like your script)
-    num_threads = min(4, len(text_chunks))  # Max 4 threads
+    # Process chunks with threading (offline TTS)
+    num_threads = min(2, len(text_chunks))  # Max 2 threads for offline TTS (less resource intensive)
     temp_files = []
     
     def process_chunk(chunk_text, chunk_index):
-        """Process a single chunk"""
+        """Process a single chunk with offline TTS"""
         try:
-            chunk_file = os.path.join(config.TEMP_DIR, f"temp_chunk_{chunk_index}.mp3")
-            tts = gTTS(text=chunk_text, lang=language, slow=False)
-            tts.save(chunk_file)
-            logger.info(f"Chunk {chunk_index + 1} completed")
+            chunk_file = os.path.join(config.TEMP_DIR, f"temp_chunk_{chunk_index}.wav")
+            offline_text_to_speech(chunk_text, chunk_file, language)
+            logger.info(f"Offline chunk {chunk_index + 1} completed")
             return chunk_file
         except Exception as e:
-            logger.error(f"Chunk {chunk_index + 1} failed: {e}")
+            logger.error(f"Offline chunk {chunk_index + 1} failed: {e}")
             return None
     
     # Process chunks in parallel
@@ -820,8 +935,8 @@ async def save_uploaded_file(file_data, filename: str) -> str:
 
 # Enhanced PDF text extraction (integrated from your main.py)
 async def extract_pdf_text(pdf_path: str) -> str:
-    """Enhanced PDF text extraction with multiple methods and large text support"""
-    logger.info("Starting enhanced PDF text extraction")
+    """Enhanced OFFLINE PDF text extraction with PyPDF2 and pdfplumber - NO API calls"""
+    logger.info("Starting enhanced OFFLINE PDF text extraction")
     extracted_text = ""
     
     def clean_text(text):
@@ -833,7 +948,7 @@ async def extract_pdf_text(pdf_path: str) -> str:
         text = re.sub(r'[^\w\s.,!?-]', '', text)
         return text.strip()
     
-    # Method 1: Enhanced PyPDF2 extraction (from your main.py)
+    # Method 1: Enhanced PyPDF2 extraction
     try:
         logger.info("Trying enhanced PyPDF2 extraction...")
         with open(pdf_path, "rb") as pdf_file:
@@ -842,10 +957,11 @@ async def extract_pdf_text(pdf_path: str) -> str:
             logger.info(f"PDF has {total_pages} pages")
             
             chars_extracted = 0
-            max_chars = 100000  # 100k characters like your script
+            max_chars = 100000  # 100k characters maximum
             
             for page_num in range(total_pages):
                 if chars_extracted >= max_chars:
+                    logger.info(f"Reached maximum character limit: {max_chars}")
                     break
                 
                 try:
@@ -874,7 +990,48 @@ async def extract_pdf_text(pdf_path: str) -> str:
     except Exception as e:
         logger.error(f"Enhanced PyPDF2 failed: {e}")
     
-    # Fallback sample text if extraction fails
+    # Method 2: pdfplumber fallback for better text extraction (if available)
+    if len(extracted_text.strip()) < 100 and PDFPLUMBER_AVAILABLE:
+        try:
+            logger.info("Trying pdfplumber extraction as fallback...")
+            with pdfplumber.open(pdf_path) as pdf:
+                total_pages = len(pdf.pages)
+                logger.info(f"pdfplumber: PDF has {total_pages} pages")
+                
+                chars_extracted = 0
+                max_chars = 100000
+                
+                for page_num, page in enumerate(pdf.pages):
+                    if chars_extracted >= max_chars:
+                        logger.info(f"pdfplumber: Reached maximum character limit: {max_chars}")
+                        break
+                    
+                    try:
+                        page_text = page.extract_text()
+                        
+                        if page_text and page_text.strip():
+                            # Clean the text
+                            page_text = clean_text(page_text)
+                            
+                            # Add to total text
+                            remaining_chars = max_chars - chars_extracted
+                            extracted_text += page_text[:remaining_chars] + " "
+                            chars_extracted = len(extracted_text)
+                            
+                            # Show progress
+                            progress = min(100, (chars_extracted / max_chars) * 100)
+                            logger.info(f"pdfplumber Progress: {progress:.1f}% ({chars_extracted}/{max_chars} characters)")
+                            
+                    except Exception as e:
+                        logger.warning(f"pdfplumber error on page {page_num + 1}: {e}")
+                        continue
+                
+                logger.info(f"pdfplumber extracted {len(extracted_text)} characters")
+                        
+        except Exception as e:
+            logger.error(f"pdfplumber extraction failed: {e}")
+    
+    # Fallback sample text if all extraction methods fail
     if len(extracted_text.strip()) < 100:
         logger.warning("PDF extraction failed, using sample text")
         extracted_text = """
@@ -902,8 +1059,17 @@ async def root():
         "service": config.API_TITLE,
         "version": config.API_VERSION,
         "status": "running",
+        "processing_mode": "OFFLINE_ONLY - No external APIs used",
+        "python_version": "3.9.18 (forced)",
+        "features": [
+            "Offline PDF text extraction (PyPDF2 + pdfplumber)",
+            "Offline text-to-speech (pyttsx3)",
+            "Offline speech-to-speech conversion (OpenVoice V2)",
+            "No internet required for processing"
+        ],
         "endpoints": {
             "health": "/health",
+            "tts_voices": "/tts-voices",
             "init_openvoice": "/init-openvoice",
             "extract_text": "/extract-text",
             "text_to_speech": "/text-to-speech",
@@ -918,14 +1084,26 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Health check endpoint for offline processing"""
     openvoice_status = "available" if Path("OpenVoice").exists() else "not_setup"
+    
+    # Check TTS engine availability
+    tts_status = "unknown"
+    try:
+        import pyttsx3
+        engine = pyttsx3.init()
+        tts_status = "available"
+        engine.stop()
+    except Exception as e:
+        tts_status = f"unavailable: {str(e)}"
     
     return {
         "status": "healthy",
         "service": config.API_TITLE,
         "version": config.API_VERSION,
+        "processing_mode": "OFFLINE_ONLY",
         "openvoice_status": openvoice_status,
+        "offline_tts_status": tts_status,
         "timestamp": datetime.now().isoformat(),
         "system": {
             "platform": platform.system(),
@@ -933,6 +1111,24 @@ async def health_check():
             "temp_dir": config.TEMP_DIR
         }
     }
+
+@app.get("/tts-voices")
+async def get_tts_voices():
+    """Get available offline TTS voices"""
+    try:
+        voices = get_offline_tts_voices()
+        return {
+            "success": True,
+            "voices": voices,
+            "total_voices": len(voices),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }, status_code=500)
 
 @app.post("/init-openvoice")
 async def initialize_openvoice():
@@ -1095,14 +1291,11 @@ async def text_to_speech_endpoint(
         logger.warning(f"Text truncated to {config.MAX_TEXT_LENGTH} characters")
     
     try:
-        # Create TTS
-        tts = gTTS(text=text, lang=language, slow=False)
+        # Create offline TTS
+        audio_file = os.path.join(config.TEMP_DIR, f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav")
+        offline_text_to_speech(text, audio_file, language)
         
-        # Save audio file
-        audio_file = os.path.join(config.TEMP_DIR, f"{filename}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3")
-        tts.save(audio_file)
-        
-        logger.info(f"TTS audio saved: {audio_file}")
+        logger.info(f"Offline TTS audio saved: {audio_file}")
         
         return {
             "success": True,
@@ -1653,7 +1846,10 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Server startup
 if __name__ == "__main__":
     logger.info(f"Starting {config.API_TITLE} v{config.API_VERSION}")
-    logger.info(f"Server will run on port {config.PORT}")
+    logger.info(f"🔒 Processing Mode: {config.PROCESSING_MODE}")
+    logger.info(f"🐍 Target Python Version: {config.PYTHON_VERSION}")
+    logger.info(f"🚀 Server will run on port {config.PORT}")
+    logger.info("📋 Features: Offline PDF extraction + Offline TTS + Offline Speech-to-Speech")
     
     uvicorn.run(
         app,

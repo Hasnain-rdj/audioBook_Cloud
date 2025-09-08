@@ -4,11 +4,11 @@ services:
     env: python
     plan: starter
     region: oregon
-    buildCommand: "pip install --upgrade pip && pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && chmod +x build.sh && ./build.sh"
+    buildCommand: "pip install --upgrade pip && pip install torch==1.13.1+cpu torchaudio==0.13.1+cpu --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && chmod +x build.sh && ./build.sh"
     startCommand: "uvicorn audioBook_api:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
-        value: 3.11.9
+        value: 3.9.18
       - key: PORT
         generateValue: true
       - key: PYTHONUNBUFFERED
