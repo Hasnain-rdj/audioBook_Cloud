@@ -77,309 +77,334 @@ def apply_voice_effects(audio_file: str, output_file: str, voice_style: str = "d
         shutil.copy2(audio_file, output_file)
         return output_file
 
-# Enhanced OpenVoice V2 Integration with chunking support
+# Enhanced OpenVoice V2 Integration - Full Implementation
 async def enhanced_openvoice_clone_voice(source_audio: str, reference_audio: str, output_file: str) -> str:
     """
-    Enhanced OpenVoice V2 voice cloning with chunking for large files (integrated from your openvoice script)
+    Enhanced OpenVoice V2 voice cloning with chunking for large files - Full Implementation
     """
     try:
-        logger.info("Starting Enhanced OpenVoice V2 voice cloning...")
+        logger.info("Starting Enhanced OpenVoice V2 voice cloning (Full Implementation)...")
         
-        # Check if OpenVoice directory exists, create if needed
+        # Check if OpenVoice directory exists
         openvoice_dir = Path("OpenVoice")
         if not openvoice_dir.exists():
             logger.info("OpenVoice not found, setting up...")
             setup_success = await setup_openvoice_environment()
             if not setup_success:
                 logger.error("OpenVoice setup failed, using fallback")
-                shutil.copy2(source_audio, output_file)
-                return output_file
+                return apply_voice_effects(source_audio, output_file, "default")
         
-        # Download models if needed
+        # Ensure models are downloaded
         models_ready = await download_openvoice_models()
         if not models_ready:
-            logger.error("OpenVoice models not available, using fallback")
-            shutil.copy2(source_audio, output_file)
-            return output_file
+            logger.error("OpenVoice models not available")
+            return apply_voice_effects(source_audio, output_file, "default")
         
         # Import OpenVoice components
         import sys
         sys.path.insert(0, str(openvoice_dir))
         
         try:
-            # Try to import the real OpenVoice (if available)
-            logger.info("Attempting to import OpenVoice components...")
+            logger.info("Importing OpenVoice components...")
             
-            # Create a subprocess to run OpenVoice in isolation
-            cloning_script = f'''
-import sys
-import os
-sys.path.insert(0, "{openvoice_dir}")
-
-# Set environment for better compatibility
-os.environ["PYTHONIOENCODING"] = "utf-8"
-
-try:
-    import torch
-    from openvoice import se_extractor
-    from openvoice.api import ToneColorConverter
-    import librosa
-    import soundfile as sf
-    from pathlib import Path
-    
-    def enhanced_voice_cloning():
-        """Enhanced voice cloning with chunking support"""
-        device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        print(f"Using device: {{device}}")
-        
-        # Initialize converter
-        ckpt_converter = "{openvoice_dir}/checkpoints/converter"
-        
-        config_file = f"{{ckpt_converter}}/config.json"
-        checkpoint_file = f"{{ckpt_converter}}/checkpoint.pth"
-        
-        if not (Path(config_file).exists() and Path(checkpoint_file).exists()):
-            print("Model files missing")
-            return False
-        
-        tone_color_converter = ToneColorConverter(config_file, device=device)
-        tone_color_converter.load_ckpt(checkpoint_file)
-        
-        # Extract embeddings
-        print("Extracting source embedding...")
-        source_se, _ = se_extractor.get_se("{source_audio}", tone_color_converter)
-        
-        print("Extracting reference embedding...")
-        reference_se, _ = se_extractor.get_se("{reference_audio}", tone_color_converter)
-        
-        # Load source audio to check duration
-        y, sr = librosa.load("{source_audio}", sr=None)
-        duration = len(y) / sr
-        print(f"Source audio duration: {{duration:.1f}} seconds")
-        
-        if duration > 120:  # Process in chunks for large files
-            print(f"Large file detected, processing in 60s chunks...")
+            # Import required libraries
+            import torch
+            import torchaudio
+            import librosa
+            import soundfile as sf
+            import numpy as np
+            from openvoice import se_extractor
+            from openvoice.api import ToneColorConverter
             
-            chunk_duration = 60
-            chunk_samples = chunk_duration * sr
-            num_chunks = min(5, int(duration // chunk_duration) + 1)  # Max 5 chunks (5 minutes)
+            logger.info("OpenVoice imports successful")
             
-            output_chunks = []
-            for i in range(num_chunks):
-                print(f"Processing chunk {{i+1}}/{{num_chunks}}...")
+            # Set device
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            logger.info(f"Using device: {device}")
+            
+            # Initialize converter
+            ckpt_converter = openvoice_dir / "checkpoints" / "converter"
+            config_file = ckpt_converter / "config.json"
+            checkpoint_file = ckpt_converter / "checkpoint.pth"
+            
+            if not config_file.exists() or not checkpoint_file.exists():
+                logger.error("OpenVoice model files missing")
+                return apply_voice_effects(source_audio, output_file, "default")
+            
+            # Initialize ToneColorConverter
+            tone_color_converter = ToneColorConverter(str(config_file), device=device)
+            tone_color_converter.load_ckpt(str(checkpoint_file))
+            
+            logger.info("ToneColorConverter initialized successfully")
+            
+            # Extract embeddings
+            logger.info("Extracting source embedding...")
+            source_se, _ = se_extractor.get_se(source_audio, tone_color_converter)
+            
+            logger.info("Extracting reference embedding...")
+            reference_se, _ = se_extractor.get_se(reference_audio, tone_color_converter)
+            
+            # Check audio duration for chunking decision
+            try:
+                y, sr = librosa.load(source_audio, sr=None)
+                duration = len(y) / sr
+                logger.info(f"Source audio duration: {duration:.1f} seconds")
                 
-                start_sample = i * chunk_samples
-                end_sample = min((i + 1) * chunk_samples, len(y))
-                
-                # Create temporary chunk file
-                chunk_file = f"temp_chunk_{{i}}.wav"
-                sf.write(chunk_file, y[start_sample:end_sample], sr)
-                
-                # Convert this chunk
-                chunk_output = f"temp_output_{{i}}.wav"
-                try:
+                if duration > 120:  # Process in chunks for large files (>2 minutes)
+                    logger.info("Large file detected, processing in chunks...")
+                    
+                    # Process in 60-second chunks
+                    chunk_duration = 60
+                    chunk_samples = chunk_duration * sr
+                    num_chunks = min(10, int(np.ceil(duration / chunk_duration)))  # Max 10 chunks
+                    
+                    output_chunks = []
+                    temp_files = []
+                    
+                    for i in range(num_chunks):
+                        logger.info(f"Processing chunk {i+1}/{num_chunks}...")
+                        
+                        start_sample = i * chunk_samples
+                        end_sample = min((i + 1) * chunk_samples, len(y))
+                        
+                        # Create temporary chunk file
+                        chunk_file = os.path.join(config.TEMP_DIR, f"temp_chunk_{i}.wav")
+                        sf.write(chunk_file, y[start_sample:end_sample], sr)
+                        temp_files.append(chunk_file)
+                        
+                        # Convert this chunk
+                        chunk_output = os.path.join(config.TEMP_DIR, f"temp_output_{i}.wav")
+                        
+                        try:
+                            tone_color_converter.convert(
+                                audio_src_path=chunk_file,
+                                src_se=source_se,
+                                tgt_se=reference_se,
+                                output_path=chunk_output,
+                                message=f"OpenVoice V2 chunk {i+1}"
+                            )
+                            output_chunks.append(chunk_output)
+                            temp_files.append(chunk_output)
+                            logger.info(f"Chunk {i+1} completed successfully")
+                        except Exception as e:
+                            logger.warning(f"Chunk {i+1} failed: {e}")
+                    
+                    # Combine chunks
+                    if output_chunks:
+                        logger.info("Combining audio chunks...")
+                        combined_audio = []
+                        
+                        for chunk_path in output_chunks:
+                            if os.path.exists(chunk_path):
+                                chunk_y, chunk_sr = librosa.load(chunk_path, sr=sr)
+                                combined_audio.append(chunk_y)
+                        
+                        if combined_audio:
+                            # Concatenate audio chunks
+                            final_audio = np.concatenate(combined_audio)
+                            sf.write(output_file, final_audio, sr)
+                            logger.info("Chunks combined successfully!")
+                        else:
+                            logger.error("No valid chunks to combine")
+                            shutil.copy2(source_audio, output_file)
+                    
+                    # Cleanup temp files
+                    for temp_file in temp_files:
+                        try:
+                            os.remove(temp_file)
+                        except:
+                            pass
+                            
+                else:
+                    # Process normally for short files
+                    logger.info("Processing audio file normally...")
                     tone_color_converter.convert(
-                        audio_src_path=chunk_file,
+                        audio_src_path=source_audio,
                         src_se=source_se,
                         tgt_se=reference_se,
-                        output_path=chunk_output,
-                        message=f"OpenVoice V2 chunk {{i+1}}"
+                        output_path=output_file,
+                        message="OpenVoice V2 conversion"
                     )
-                    output_chunks.append(chunk_output)
-                    print(f"Chunk {{i+1}} completed")
-                except Exception as e:
-                    print(f"Chunk {{i+1}} failed: {{e}}")
-                finally:
-                    if os.path.exists(chunk_file):
-                        os.remove(chunk_file)
-            
-            # Combine chunks using simple concatenation
-            if output_chunks:
-                print("Combining chunks...")
-                combined_audio = []
-                for chunk_path in output_chunks:
-                    if os.path.exists(chunk_path):
-                        chunk_y, chunk_sr = librosa.load(chunk_path, sr=sr)
-                        combined_audio.append(chunk_y)
-                        os.remove(chunk_path)
+                    logger.info("Voice cloning completed successfully!")
                 
-                if combined_audio:
-                    import numpy as np
-                    final_audio = np.concatenate(combined_audio)
-                    sf.write("{output_file}", final_audio, sr)
-                    print("Chunks combined successfully!")
-                    return True
-                else:
-                    print("No valid chunks to combine")
-                    return False
+            except Exception as audio_error:
+                logger.error(f"Audio processing error: {audio_error}")
+                # Fallback to basic conversion
+                tone_color_converter.convert(
+                    audio_src_path=source_audio,
+                    src_se=source_se,
+                    tgt_se=reference_se,
+                    output_path=output_file,
+                    message="OpenVoice V2 fallback conversion"
+                )
+            
+            # Verify output file was created
+            if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+                logger.info(f"Voice cloning completed successfully: {output_file}")
+                return output_file
             else:
-                print("No chunks processed successfully")
-                return False
-        else:
-            # Process normally for short files
-            tone_color_converter.convert(
-                audio_src_path="{source_audio}",
-                src_se=source_se,
-                tgt_se=reference_se,
-                output_path="{output_file}",
-                message="OpenVoice V2 cloning"
-            )
-            print("Voice cloning completed!")
-            return True
-    
-    # Run the enhanced cloning
-    success = enhanced_voice_cloning()
-    print(f"RESULT: {{'success': {{success}}}}")
-    
-except ImportError as e:
-    print(f"Import error: {{e}}")
-    print("RESULT: {{'success': False}}")
-except Exception as e:
-    print(f"Processing error: {{e}}")
-    print("RESULT: {{'success': False}}")
-'''
-            
-            # Write the script to a temporary file
-            script_path = os.path.join(config.TEMP_DIR, "temp_openvoice_script.py")
-            with open(script_path, "w", encoding="utf-8") as f:
-                f.write(cloning_script)
-            
-            # Execute the script in a subprocess for isolation
-            import subprocess
-            result = subprocess.run([
-                sys.executable, script_path
-            ], capture_output=True, text=True, timeout=600)  # 10 minute timeout
-            
-            # Clean up the script
-            if os.path.exists(script_path):
-                os.remove(script_path)
-            
-            # Check if the processing was successful
-            if "RESULT: {'success': True}" in result.stdout:
-                logger.info("Enhanced OpenVoice processing completed successfully")
-                if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
-                    return output_file
-            
-            # If we get here, the enhanced processing failed
-            logger.warning("Enhanced OpenVoice processing failed, using fallback")
-            logger.info(f"OpenVoice output: {result.stdout}")
-            if result.stderr:
-                logger.warning(f"OpenVoice errors: {result.stderr}")
+                logger.error("Voice cloning failed - no output file generated")
+                return apply_voice_effects(source_audio, output_file, "default")
+                
+        except ImportError as e:
+            logger.error(f"OpenVoice import error: {e}")
+            logger.info("Falling back to voice effects...")
+            return apply_voice_effects(source_audio, output_file, "default")
             
         except Exception as e:
-            logger.error(f"Enhanced OpenVoice processing error: {e}")
-        
-        # Fallback to simple voice effects
-        logger.info("Using voice effects fallback")
-        return apply_voice_effects(source_audio, output_file, "default")
+            logger.error(f"OpenVoice processing error: {e}")
+            logger.info("Falling back to voice effects...")
+            return apply_voice_effects(source_audio, output_file, "default")
         
     except Exception as e:
         logger.error(f"Enhanced OpenVoice cloning failed: {e}")
         logger.info("Using original audio as fallback")
-        shutil.copy2(source_audio, output_file)
-        return output_file
+        try:
+            shutil.copy2(source_audio, output_file)
+            return output_file
+        except Exception as fallback_error:
+            logger.error(f"Even fallback failed: {fallback_error}")
+            raise HTTPException(status_code=500, detail="Audio processing completely failed")
 
 async def download_openvoice_models():
-    """Download OpenVoice models and setup if needed"""
+    """Download OpenVoice V2 models and setup if needed - Full Implementation"""
     try:
+        logger.info("Checking OpenVoice V2 models...")
+        
         openvoice_dir = Path("OpenVoice")
+        converter_dir = openvoice_dir / "checkpoints" / "converter"
+        base_speaker_dir = openvoice_dir / "checkpoints" / "base_speakers" / "EN"
         
-        # Create OpenVoice directory structure if it doesn't exist
-        if not openvoice_dir.exists():
-            logger.info("Setting up OpenVoice V2...")
-            await setup_openvoice_environment()
+        # Check if all required files exist
+        required_files = [
+            converter_dir / "config.json",
+            converter_dir / "checkpoint.pth",
+            base_speaker_dir / "config.json", 
+            base_speaker_dir / "checkpoint.pth"
+        ]
         
-        models_dir = Path("OpenVoice/checkpoints/converter")
-        models_dir.mkdir(parents=True, exist_ok=True)
+        all_files_exist = all(f.exists() and f.stat().st_size > 100 for f in required_files)
+        
+        if all_files_exist:
+            logger.info("All OpenVoice V2 models are available")
+            return True
+        
+        logger.info("Downloading missing OpenVoice V2 models...")
+        
+        # Create directories
+        converter_dir.mkdir(parents=True, exist_ok=True)
+        base_speaker_dir.mkdir(parents=True, exist_ok=True)
         
         # Download model files
-        model_files = {
-            "config.json": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/converter/config.json",
-            "checkpoint.pth": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/converter/checkpoint.pth"
+        import requests
+        
+        model_urls = {
+            "converter_config": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/converter/config.json",
+            "converter_checkpoint": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/converter/checkpoint.pth",
+            "base_speaker_config": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/base_speakers/EN/config.json",
+            "base_speaker_checkpoint": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/base_speakers/EN/checkpoint.pth"
         }
         
-        for filename, url in model_files.items():
-            file_path = models_dir / filename
-            if not file_path.exists():
-                logger.info(f"Downloading {filename}...")
-                try:
-                    response = requests.get(url, timeout=300)  # 5 minute timeout
-                    if response.status_code == 200:
-                        with open(file_path, 'wb') as f:
-                            f.write(response.content)
-                        logger.info(f"Downloaded {filename}")
-                    else:
-                        logger.error(f"Failed to download {filename}: HTTP {response.status_code}")
-                except Exception as e:
-                    logger.error(f"Error downloading {filename}: {e}")
+        download_paths = {
+            "converter_config": converter_dir / "config.json",
+            "converter_checkpoint": converter_dir / "checkpoint.pth",
+            "base_speaker_config": base_speaker_dir / "config.json",
+            "base_speaker_checkpoint": base_speaker_dir / "checkpoint.pth"
+        }
+        
+        for model_name, url in model_urls.items():
+            try:
+                if not download_paths[model_name].exists() or download_paths[model_name].stat().st_size < 100:
+                    logger.info(f"Downloading {model_name}...")
                     
-        return True
+                    response = requests.get(url, timeout=600, stream=True)  # 10 minute timeout
+                    response.raise_for_status()
                     
+                    with open(download_paths[model_name], 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    
+                    logger.info(f"Downloaded {model_name} ({download_paths[model_name].stat().st_size} bytes)")
+            except Exception as e:
+                logger.error(f"Failed to download {model_name}: {e}")
+                return False
+        
+        # Verify all downloads
+        all_downloaded = all(f.exists() and f.stat().st_size > 100 for f in required_files)
+        
+        if all_downloaded:
+            logger.info("All OpenVoice V2 models downloaded successfully")
+            return True
+        else:
+            logger.error("Some model downloads failed")
+            return False
+            
     except Exception as e:
         logger.error(f"Model download failed: {e}")
         return False
 
 async def setup_openvoice_environment():
-    """Setup OpenVoice V2 environment"""
+    """Setup OpenVoice V2 environment with full repository - Full Implementation"""
     try:
         logger.info("Setting up OpenVoice V2 environment...")
         
-        # Create directory structure
         openvoice_dir = Path("OpenVoice")
-        openvoice_dir.mkdir(exist_ok=True)
         
-        # Create subdirectories
-        (openvoice_dir / "checkpoints" / "converter").mkdir(parents=True, exist_ok=True)
-        (openvoice_dir / "openvoice").mkdir(parents=True, exist_ok=True)
+        # Check if OpenVoice is already set up
+        if (openvoice_dir / "openvoice").exists() and (openvoice_dir / "openvoice" / "__init__.py").exists():
+            logger.info("OpenVoice V2 environment already exists")
+            return True
         
-        # Download OpenVoice source if not exists
-        source_files = ["api.py", "se_extractor.py", "__init__.py"]
-        openvoice_src_dir = openvoice_dir / "openvoice"
+        # Download and extract OpenVoice repository
+        logger.info("Downloading OpenVoice V2 repository...")
         
-        # Create minimal OpenVoice files if they don't exist
-        if not (openvoice_src_dir / "__init__.py").exists():
-            logger.info("Creating OpenVoice source files...")
+        import requests
+        import zipfile
+        import tempfile
+        
+        # Download the repository
+        repo_url = "https://github.com/myshell-ai/OpenVoice/archive/refs/heads/main.zip"
+        response = requests.get(repo_url, timeout=600)  # 10 minute timeout
+        response.raise_for_status()
+        
+        # Extract to temporary location
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.zip') as temp_zip:
+            temp_zip.write(response.content)
+            temp_zip_path = temp_zip.name
+        
+        # Extract the zip file
+        with zipfile.ZipFile(temp_zip_path, 'r') as zip_ref:
+            zip_ref.extractall(".")
+        
+        # Move contents to OpenVoice directory
+        extracted_dir = Path("OpenVoice-main")
+        if extracted_dir.exists():
+            openvoice_dir.mkdir(exist_ok=True)
             
-            # Create __init__.py
-            with open(openvoice_src_dir / "__init__.py", "w") as f:
-                f.write("# OpenVoice V2 package\n")
+            # Copy all contents
+            for item in extracted_dir.iterdir():
+                if item.is_dir():
+                    shutil.copytree(item, openvoice_dir / item.name, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, openvoice_dir / item.name)
             
-            # Download or create minimal API and extractor files
-            try:
-                # Try to download the actual OpenVoice source
-                response = requests.get("https://github.com/myshell-ai/OpenVoice/archive/refs/heads/main.zip", timeout=300)
-                if response.status_code == 200:
-                    zip_path = openvoice_dir / "openvoice_source.zip"
-                    with open(zip_path, "wb") as f:
-                        f.write(response.content)
-                    
-                    # Extract the source
-                    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                        zip_ref.extractall(openvoice_dir)
-                    
-                    # Move files to correct location
-                    source_dir = openvoice_dir / "OpenVoice-main" / "openvoice"
-                    if source_dir.exists():
-                        for file in source_dir.glob("*"):
-                            if file.is_file():
-                                shutil.copy2(file, openvoice_src_dir / file.name)
-                    
-                    # Cleanup
-                    if zip_path.exists():
-                        zip_path.unlink()
-                    if (openvoice_dir / "OpenVoice-main").exists():
-                        shutil.rmtree(openvoice_dir / "OpenVoice-main")
-                    
-                    logger.info("OpenVoice source files setup complete")
-                    
-            except Exception as e:
-                logger.error(f"Failed to download OpenVoice source: {e}")
-                logger.info("Creating minimal fallback implementation...")
-                
-                # Create minimal fallback files
-                create_minimal_openvoice_files(openvoice_src_dir)
-                
-        return True
+            # Cleanup
+            shutil.rmtree(extracted_dir)
+        
+        # Cleanup temp file
+        os.unlink(temp_zip_path)
+        
+        # Verify setup
+        if (openvoice_dir / "openvoice").exists():
+            logger.info("OpenVoice V2 environment setup completed successfully")
+            return True
+        else:
+            logger.error("OpenVoice V2 setup verification failed")
+            return False
+            
+    except Exception as e:
+        logger.error(f"OpenVoice environment setup failed: {e}")
+        return False
         
     except Exception as e:
         logger.error(f"OpenVoice environment setup failed: {e}")
