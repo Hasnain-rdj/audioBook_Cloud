@@ -1,6 +1,24 @@
 # Deployment Fix Summary for audioBook_Cloud
 
-## Issues Fixed
+## ✅ **LATEST FIX: System Dependencies Error (RESOLVED)**
+
+### Issue:
+```
+ERROR: No matching distribution found for espeak
+ERROR: Could not find a version that satisfies the requirement espeak
+```
+
+### Root Cause:
+System packages (`espeak`, `festival`, `speechd`) were incorrectly added to `requirements.txt` instead of being installed via `apt-get`.
+
+### ✅ **Solution Applied:**
+1. **Cleaned requirements.txt** - Removed all system packages
+2. **System packages handled in render.yaml** via `apt-get install`
+3. **Proper separation**: System deps → PyTorch → Python packages
+
+---
+
+## Previous Issues Fixed
 
 ### 1. Python Version Compatibility
 - **Problem**: Render was using Python 3.13.4 instead of Python 3.9
