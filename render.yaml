@@ -3,15 +3,16 @@ services:
     name: audiobook-voice-cloning-api
     env: python
     plan: starter
-    buildCommand: "./build.sh"
+    region: oregon
+    buildCommand: "pip install --upgrade pip && pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu && pip install -r requirements.txt && chmod +x build.sh && ./build.sh"
     startCommand: "uvicorn audioBook_api:app --host 0.0.0.0 --port $PORT"
     envVars:
       - key: PYTHON_VERSION
-        value: 3.9.18
-      - key: PIP_VERSION  
-        value: 23.0.1
+        value: 3.11.9
       - key: PORT
         generateValue: true
+      - key: PYTHONUNBUFFERED
+        value: 1
     autoDeploy: false
     disk:
       name: audiobook-storage

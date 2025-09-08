@@ -547,15 +547,38 @@ ensure_temp_dir()
 async def startup_event():
     """Initialize OpenVoice V2 on server startup"""
     try:
-        logger.info("Starting server initialization...")
+        import sys
+        logger.info(f"🚀 Starting server initialization...")
+        logger.info(f"🐍 Python version: {sys.version}")
+        logger.info(f"📂 Working directory: {os.getcwd()}")
+        logger.info(f"💾 Available disk space:")
+        
+        # Check disk space
+        try:
+            import shutil
+            total, used, free = shutil.disk_usage("/")
+            logger.info(f"   Total: {total // (2**30)} GB")
+            logger.info(f"   Used: {used // (2**30)} GB") 
+            logger.info(f"   Free: {free // (2**30)} GB")
+        except:
+            logger.info("   Could not check disk space")
+        
+        # Check if PyTorch is available
+        try:
+            import torch
+            logger.info(f"🔥 PyTorch version: {torch.__version__}")
+            logger.info(f"🔥 PyTorch CUDA available: {torch.cuda.is_available()}")
+        except ImportError:
+            logger.warning("⚠️ PyTorch not available - will use fallback mode")
         
         # Initialize OpenVoice in background
         asyncio.create_task(initialize_openvoice_background())
         
-        logger.info("Server startup completed")
+        logger.info("✅ Server startup completed")
         
     except Exception as e:
-        logger.error(f"Startup initialization failed: {e}")
+        logger.error(f"❌ Startup initialization failed: {e}")
+        logger.info("🔄 Continuing with basic functionality...")
 
 async def initialize_openvoice_background():
     """Initialize OpenVoice in background during startup"""
