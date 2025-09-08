@@ -6,9 +6,9 @@ PyPDF2==3.0.1
 pyttsx3==2.90
 requests==2.28.2
 
-# PyTorch and ML dependencies for OpenVoice V2 (CPU version for cloud)
-torch==1.13.1+cpu
-torchaudio==0.13.1+cpu
+# PyTorch and ML dependencies (standard versions compatible with Python 3.9)
+torch==1.13.1
+torchaudio==0.13.1
 
 # Audio processing and ML libraries
 librosa==0.9.2
