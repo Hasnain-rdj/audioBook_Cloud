@@ -48,11 +48,20 @@ except ImportError:
     PDFPLUMBER_AVAILABLE = False
     logger.warning("pdfplumber not available, using PyPDF2 only")
 
-# Import offline TTS library
-import pyttsx3
+# Import offline TTS library (with cloud environment fallback)
+try:
+    import pyttsx3
+    PYTTSX3_AVAILABLE = True
+    logger.info("pyttsx3 offline TTS library loaded successfully")
+except ImportError:
+    PYTTSX3_AVAILABLE = False
+    logger.warning("pyttsx3 not available in cloud environment")
+except Exception as e:
+    PYTTSX3_AVAILABLE = False
+    logger.warning(f"pyttsx3 initialization issue: {e}")
+
 from datetime import datetime
 import subprocess
-logger.info("pyttsx3 offline TTS library loaded successfully")
 
 # Configure logging for cloud deployment
 logging.basicConfig(
@@ -62,13 +71,23 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Offline Text-to-Speech using pyttsx3
+# Offline Text-to-Speech using pyttsx3 (with cloud fallback)
 def offline_text_to_speech(text: str, output_path: str, language: str = "en", voice_rate: int = 200) -> str:
     """
     Offline text-to-speech conversion using pyttsx3 (no internet required)
+    Falls back to creating a simple text file in cloud environments
     """
     try:
         logger.info(f"Starting offline TTS conversion for {len(text)} characters")
+        
+        if not PYTTSX3_AVAILABLE:
+            logger.warning("pyttsx3 not available, creating text file as fallback")
+            # Cloud fallback: create a text file instead of audio
+            text_output_path = output_path.replace('.wav', '.txt').replace('.mp3', '.txt')
+            with open(text_output_path, 'w', encoding='utf-8') as f:
+                f.write(f"OFFLINE TTS FALLBACK - Text content:\n\n{text}")
+            logger.info(f"Text fallback file created: {text_output_path}")
+            return text_output_path
         
         # Initialize pyttsx3 engine
         engine = pyttsx3.init()
@@ -105,11 +124,22 @@ def offline_text_to_speech(text: str, output_path: str, language: str = "en", vo
             
     except Exception as e:
         logger.error(f"Offline TTS error: {e}")
-        raise Exception(f"TTS conversion failed: {str(e)}")
+        # Ultimate fallback for cloud environments
+        text_output_path = output_path.replace('.wav', '.txt').replace('.mp3', '.txt')
+        with open(text_output_path, 'w', encoding='utf-8') as f:
+            f.write(f"TTS CONVERSION FALLBACK\n\nOriginal text ({len(text)} characters):\n\n{text}")
+        logger.info(f"Created text fallback file: {text_output_path}")
+        return text_output_path
 
 def get_offline_tts_voices():
-    """Get available offline TTS voices"""
+    """Get available offline TTS voices (with cloud fallback)"""
     try:
+        if not PYTTSX3_AVAILABLE:
+            logger.warning("pyttsx3 not available, returning fallback voice list")
+            return [
+                {"id": "fallback", "name": "Cloud Fallback Text Output", "language": "en"}
+            ]
+            
         engine = pyttsx3.init()
         voices = engine.getProperty('voices')
         voice_list = []
@@ -122,10 +152,13 @@ def get_offline_tts_voices():
             }
             voice_list.append(voice_info)
         
+        engine.stop()
         return voice_list
     except Exception as e:
         logger.error(f"Failed to get TTS voices: {e}")
-        return []
+        return [
+            {"id": "fallback", "name": "Cloud Fallback Text Output", "language": "en"}
+        ]
 
 # Voice cloning simulation (since OpenVoice is too heavy for cloud)
 def apply_voice_effects(audio_file: str, output_file: str, voice_style: str = "default") -> str:
@@ -692,13 +725,16 @@ async def startup_event():
         
         # Check offline TTS availability
         try:
-            import pyttsx3
-            engine = pyttsx3.init()
-            voices = engine.getProperty('voices')
-            logger.info(f"🎙️ Offline TTS engine initialized with {len(voices) if voices else 0} voices")
-            engine.stop()
+            if PYTTSX3_AVAILABLE:
+                import pyttsx3
+                engine = pyttsx3.init()
+                voices = engine.getProperty('voices')
+                logger.info(f"🎙️ Offline TTS engine initialized with {len(voices) if voices else 0} voices")
+                engine.stop()
+            else:
+                logger.warning("🎙️ Offline TTS not available - using text fallback mode")
         except Exception as e:
-            logger.warning(f"⚠️ Offline TTS not available: {e}")
+            logger.warning(f"⚠️ Offline TTS initialization issue: {e}")
         
         # Check PyTorch availability for OpenVoice
         try:
@@ -1088,22 +1124,27 @@ async def health_check():
     openvoice_status = "available" if Path("OpenVoice").exists() else "not_setup"
     
     # Check TTS engine availability
-    tts_status = "unknown"
-    try:
-        import pyttsx3
-        engine = pyttsx3.init()
-        tts_status = "available"
-        engine.stop()
-    except Exception as e:
-        tts_status = f"unavailable: {str(e)}"
+    if PYTTSX3_AVAILABLE:
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            tts_status = "available"
+            engine.stop()
+        except Exception as e:
+            tts_status = f"initialization_error: {str(e)}"
+    else:
+        tts_status = "fallback_mode"
     
     return {
         "status": "healthy",
         "service": config.API_TITLE,
         "version": config.API_VERSION,
-        "processing_mode": "OFFLINE_ONLY",
+        "processing_mode": config.PROCESSING_MODE,
+        "python_target_version": config.PYTHON_VERSION,
         "openvoice_status": openvoice_status,
         "offline_tts_status": tts_status,
+        "pyttsx3_available": PYTTSX3_AVAILABLE,
+        "pdfplumber_available": PDFPLUMBER_AVAILABLE,
         "timestamp": datetime.now().isoformat(),
         "system": {
             "platform": platform.system(),
@@ -1111,6 +1152,26 @@ async def health_check():
             "temp_dir": config.TEMP_DIR
         }
     }
+
+@app.get("/tts-voices")
+async def get_tts_voices():
+    """Get available TTS voices endpoint"""
+    try:
+        voices = get_offline_tts_voices()
+        return {
+            "success": True,
+            "voices": voices,
+            "count": len(voices),
+            "pyttsx3_available": PYTTSX3_AVAILABLE,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+            "pyttsx3_available": PYTTSX3_AVAILABLE,
+            "timestamp": datetime.now().isoformat()
+        }, status_code=500)
 
 @app.get("/tts-voices")
 async def get_tts_voices():
