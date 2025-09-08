@@ -295,14 +295,27 @@ async def download_openvoice_models():
         converter_dir.mkdir(parents=True, exist_ok=True)
         base_speaker_dir.mkdir(parents=True, exist_ok=True)
         
-        # Download model files
+        # Download model files with updated URLs
         import requests
         
-        model_urls = {
-            "converter_config": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/converter/config.json",
-            "converter_checkpoint": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/converter/checkpoint.pth",
-            "base_speaker_config": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/base_speakers/EN/config.json",
-            "base_speaker_checkpoint": "https://myshell-public-repo-hosting.s3.amazonaws.com/openvoice/checkpoints/base_speakers/EN/checkpoint.pth"
+        # Try multiple sources for OpenVoice models
+        model_sources = {
+            "converter_config": [
+                "https://github.com/myshell-ai/OpenVoice/raw/main/checkpoints/converter/config.json",
+                "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/converter/config.json"
+            ],
+            "converter_checkpoint": [
+                "https://github.com/myshell-ai/OpenVoice/raw/main/checkpoints/converter/checkpoint.pth", 
+                "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/converter/checkpoint.pth"
+            ],
+            "base_speaker_config": [
+                "https://github.com/myshell-ai/OpenVoice/raw/main/checkpoints/base_speakers/EN/config.json",
+                "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/base_speakers/EN/config.json"
+            ],
+            "base_speaker_checkpoint": [
+                "https://github.com/myshell-ai/OpenVoice/raw/main/checkpoints/base_speakers/EN/checkpoint.pth",
+                "https://huggingface.co/myshell-ai/OpenVoice/resolve/main/checkpoints/base_speakers/EN/checkpoint.pth"
+            ]
         }
         
         download_paths = {
@@ -312,19 +325,34 @@ async def download_openvoice_models():
             "base_speaker_checkpoint": base_speaker_dir / "checkpoint.pth"
         }
         
-        for model_name, url in model_urls.items():
+        for model_name, urls in model_sources.items():
             try:
                 if not download_paths[model_name].exists() or download_paths[model_name].stat().st_size < 100:
                     logger.info(f"Downloading {model_name}...")
                     
-                    response = requests.get(url, timeout=600, stream=True)  # 10 minute timeout
-                    response.raise_for_status()
+                    # Try each URL until one works
+                    downloaded = False
+                    for url in urls:
+                        try:
+                            logger.info(f"Trying URL: {url}")
+                            response = requests.get(url, timeout=600, stream=True)  # 10 minute timeout
+                            response.raise_for_status()
+                            
+                            with open(download_paths[model_name], 'wb') as f:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                            
+                            logger.info(f"Downloaded {model_name} from {url} ({download_paths[model_name].stat().st_size} bytes)")
+                            downloaded = True
+                            break
+                        except Exception as e:
+                            logger.warning(f"Failed to download {model_name} from {url}: {e}")
+                            continue
                     
-                    with open(download_paths[model_name], 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    
-                    logger.info(f"Downloaded {model_name} ({download_paths[model_name].stat().st_size} bytes)")
+                    if not downloaded:
+                        logger.error(f"Failed to download {model_name} from all sources")
+                        return False
+                        
             except Exception as e:
                 logger.error(f"Failed to download {model_name}: {e}")
                 return False
@@ -867,6 +895,7 @@ async def extract_pdf_text(pdf_path: str) -> str:
 
 # API Endpoints
 @app.get("/")
+@app.head("/")
 async def root():
     """Root endpoint with API information"""
     return {
